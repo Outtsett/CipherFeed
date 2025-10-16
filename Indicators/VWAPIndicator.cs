@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Drawing;
 using TradingPlatform.BusinessLayer;
 
 namespace CipherFeed.Indicators
@@ -28,12 +27,14 @@ namespace CipherFeed.Indicators
 
         private double sessionHigh;
         private double sessionLow;
+        private double sessionOpen;
 
-        private const int LINE_VWAP = 0;
-        private const int LINE_UPPER_STDDEV = 1;
-        private const int LINE_LOWER_STDDEV = 2;
-        private const int LINE_UPPER_MPD = 3;
-        private const int LINE_LOWER_MPD = 4;
+        // Calculated values (in percentage space)
+        private double vwap;
+        private double upperStdDev;
+        private double lowerStdDev;
+        private double upperMPD;
+        private double lowerMPD;
 
         #endregion
 
@@ -42,14 +43,8 @@ namespace CipherFeed.Indicators
         public SessionAnchoredVWAP()
         {
             Name = "Session Anchored VWAP";
-            Description = "Volume-Weighted Average Price with 2σ Std Dev and MPD bands";
+            Description = "Volume-Weighted Average Price with 2σ Std Dev and MPD bands (in percentage space)";
             SeparateWindow = false;
-
-            AddLineSeries("VWAP", Color.Yellow, 2, LineStyle.Solid);
-            AddLineSeries("Upper Std Dev 2σ", Color.Orange, 1, LineStyle.Solid);
-            AddLineSeries("Lower Std Dev 2σ", Color.Orange, 1, LineStyle.Solid);
-            AddLineSeries("Upper MPD", Color.Red, 2, LineStyle.Dot);
-            AddLineSeries("Lower MPD", Color.Red, 2, LineStyle.Dot);
         }
 
         #endregion
@@ -64,6 +59,7 @@ namespace CipherFeed.Indicators
             barCount = 0;
             sessionHigh = double.MinValue;
             sessionLow = double.MaxValue;
+            sessionOpen = 0.0;
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -75,12 +71,33 @@ namespace CipherFeed.Indicators
 
             if (volume <= 0 || double.IsNaN(volume))
             {
-                SetValueToAllLines(double.NaN);
+                vwap = double.NaN;
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
+                upperMPD = double.NaN;
+                lowerMPD = double.NaN;
                 return;
             }
 
             double high = High();
             double low = Low();
+            double close = Close();
+
+            // Set session open on first bar
+            if (barCount == 0)
+            {
+                sessionOpen = UseTypicalPrice ? (high + low + close) / 3.0 : close;
+            }
+
+            if (sessionOpen == 0.0 || double.IsNaN(sessionOpen))
+            {
+                vwap = double.NaN;
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
+                upperMPD = double.NaN;
+                lowerMPD = double.NaN;
+                return;
+            }
 
             if (high > sessionHigh)
                 sessionHigh = high;
@@ -90,28 +107,34 @@ namespace CipherFeed.Indicators
             double price;
             if (UseTypicalPrice)
             {
-                double close = Close();
                 price = (high + low + close) / 3.0;
             }
             else
             {
-                price = Close();
+                price = close;
             }
 
             if (double.IsNaN(price) || price <= 0)
             {
-                SetValueToAllLines(double.NaN);
+                vwap = double.NaN;
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
+                upperMPD = double.NaN;
+                lowerMPD = double.NaN;
                 return;
             }
 
-            double priceVolume = price * volume;
+            // Convert price to percentage from session open
+            double pricePct = (price - sessionOpen) / sessionOpen;
+
+            // VWAP calculation in percentage space
+            double priceVolume = pricePct * volume;
             cumulativePriceVolume += priceVolume;
             cumulativeVolume += volume;
-            cumulativePriceSquaredVolume += price * priceVolume;
+            cumulativePriceSquaredVolume += pricePct * priceVolume;
             barCount++;
 
-            double vwap = cumulativePriceVolume / cumulativeVolume;
-            SetValue(vwap, LINE_VWAP);
+            vwap = cumulativePriceVolume / cumulativeVolume;
 
             if (ShowStdDevBands && barCount > 1)
             {
@@ -121,31 +144,29 @@ namespace CipherFeed.Indicators
                     variance = 0;
 
                 double stdDev = Math.Sqrt(variance);
-                double upper2Sigma = vwap + (stdDev * 2.0);
-                double lower2Sigma = vwap - (stdDev * 2.0);
-
-                SetValue(upper2Sigma, LINE_UPPER_STDDEV);
-                SetValue(lower2Sigma, LINE_LOWER_STDDEV);
+                upperStdDev = vwap + (stdDev * 2.0);
+                lowerStdDev = vwap - (stdDev * 2.0);
             }
             else
             {
-                SetValue(double.NaN, LINE_UPPER_STDDEV);
-                SetValue(double.NaN, LINE_LOWER_STDDEV);
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
             }
 
             if (ShowMPDBands && barCount > 1 && sessionHigh > sessionLow)
             {
-                double mpd = (sessionHigh - sessionLow) / 2.0;
-                double upperMPD = vwap + mpd;
-                double lowerMPD = vwap - mpd;
-
-                SetValue(upperMPD, LINE_UPPER_MPD);
-                SetValue(lowerMPD, LINE_LOWER_MPD);
+                // Convert session high/low to percentage space
+                double sessionHighPct = (sessionHigh - sessionOpen) / sessionOpen;
+                double sessionLowPct = (sessionLow - sessionOpen) / sessionOpen;
+                
+                double mpd = (sessionHighPct - sessionLowPct) / 2.0;
+                upperMPD = vwap + mpd;
+                lowerMPD = vwap - mpd;
             }
             else
             {
-                SetValue(double.NaN, LINE_UPPER_MPD);
-                SetValue(double.NaN, LINE_LOWER_MPD);
+                upperMPD = double.NaN;
+                lowerMPD = double.NaN;
             }
         }
 
@@ -157,18 +178,7 @@ namespace CipherFeed.Indicators
             barCount = 0;
             sessionHigh = double.MinValue;
             sessionLow = double.MaxValue;
-        }
-
-        #endregion
-
-        #region Helper Methods
-
-        private void SetValueToAllLines(double value)
-        {
-            for (int i = 0; i < 5; i++)
-            {
-                SetValue(value, i);
-            }
+            sessionOpen = 0.0;
         }
 
         #endregion
@@ -177,27 +187,32 @@ namespace CipherFeed.Indicators
 
         public double GetVWAP(int offset = 0)
         {
-            return GetValue(offset, LINE_VWAP);
+            return vwap;
         }
 
         public double GetUpperStdDev(int offset = 0)
         {
-            return GetValue(offset, LINE_UPPER_STDDEV);
+            return upperStdDev;
         }
 
         public double GetLowerStdDev(int offset = 0)
         {
-            return GetValue(offset, LINE_LOWER_STDDEV);
+            return lowerStdDev;
         }
 
         public double GetUpperMPD(int offset = 0)
         {
-            return GetValue(offset, LINE_UPPER_MPD);
+            return upperMPD;
         }
 
         public double GetLowerMPD(int offset = 0)
         {
-            return GetValue(offset, LINE_LOWER_MPD);
+            return lowerMPD;
+        }
+
+        public double GetSessionOpen()
+        {
+            return sessionOpen;
         }
 
         #endregion

@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Drawing;
 using TradingPlatform.BusinessLayer;
 
 namespace CipherFeed.Indicators
@@ -21,10 +20,12 @@ namespace CipherFeed.Indicators
         private double cumulativePrice;
         private double cumulativePriceSquared;
         private int barCount;
+        private double sessionOpen;
 
-        private const int LINE_TWAP = 0;
-        private const int LINE_UPPER_STDDEV = 1;
-        private const int LINE_LOWER_STDDEV = 2;
+        // Calculated values (in percentage space)
+        private double twap;
+        private double upperStdDev;
+        private double lowerStdDev;
 
         #endregion
 
@@ -33,12 +34,8 @@ namespace CipherFeed.Indicators
         public TWAPIndicator()
         {
             Name = "TWAP Indicator";
-            Description = "Time-Weighted Average Price with 2σ Std Dev bands";
+            Description = "Time-Weighted Average Price with 2σ Std Dev bands (in percentage space)";
             SeparateWindow = false;
-
-            AddLineSeries("TWAP", Color.Purple, 2, LineStyle.Solid);
-            AddLineSeries("Upper Std Dev 2σ", Color.Magenta, 1, LineStyle.Solid);
-            AddLineSeries("Lower Std Dev 2σ", Color.Magenta, 1, LineStyle.Solid);
         }
 
         #endregion
@@ -50,6 +47,7 @@ namespace CipherFeed.Indicators
             cumulativePrice = 0.0;
             cumulativePriceSquared = 0.0;
             barCount = 0;
+            sessionOpen = 0.0;
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -59,36 +57,57 @@ namespace CipherFeed.Indicators
 
             double high = High();
             double low = Low();
+            double close = Close();
+
+            // Set session open on first bar
+            if (barCount == 0)
+            {
+                sessionOpen = UseTypicalPrice ? (high + low + close) / 3.0 : close;
+            }
+
+            if (sessionOpen == 0.0 || double.IsNaN(sessionOpen))
+            {
+                twap = double.NaN;
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
+                return;
+            }
 
             if (double.IsNaN(high) || double.IsNaN(low))
             {
-                SetValueToAllLines(double.NaN);
+                twap = double.NaN;
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
                 return;
             }
 
             double price;
             if (UseTypicalPrice)
             {
-                double close = Close();
                 price = (high + low + close) / 3.0;
             }
             else
             {
-                price = Close();
+                price = close;
             }
 
             if (double.IsNaN(price) || price <= 0)
             {
-                SetValueToAllLines(double.NaN);
+                twap = double.NaN;
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
                 return;
             }
 
-            cumulativePrice += price;
-            cumulativePriceSquared += price * price;
+            // Convert price to percentage from session open
+            double pricePct = (price - sessionOpen) / sessionOpen;
+
+            // TWAP calculation in percentage space
+            cumulativePrice += pricePct;
+            cumulativePriceSquared += pricePct * pricePct;
             barCount++;
 
-            double twap = cumulativePrice / barCount;
-            SetValue(twap, LINE_TWAP);
+            twap = cumulativePrice / barCount;
 
             if (ShowStdDevBands && barCount > 1)
             {
@@ -98,16 +117,13 @@ namespace CipherFeed.Indicators
                     variance = 0;
 
                 double stdDev = Math.Sqrt(variance);
-                double upper2Sigma = twap + (stdDev * 2.0);
-                double lower2Sigma = twap - (stdDev * 2.0);
-
-                SetValue(upper2Sigma, LINE_UPPER_STDDEV);
-                SetValue(lower2Sigma, LINE_LOWER_STDDEV);
+                upperStdDev = twap + (stdDev * 2.0);
+                lowerStdDev = twap - (stdDev * 2.0);
             }
             else
             {
-                SetValue(double.NaN, LINE_UPPER_STDDEV);
-                SetValue(double.NaN, LINE_LOWER_STDDEV);
+                upperStdDev = double.NaN;
+                lowerStdDev = double.NaN;
             }
         }
 
@@ -116,18 +132,7 @@ namespace CipherFeed.Indicators
             cumulativePrice = 0.0;
             cumulativePriceSquared = 0.0;
             barCount = 0;
-        }
-
-        #endregion
-
-        #region Helper Methods
-
-        private void SetValueToAllLines(double value)
-        {
-            for (int i = 0; i < 3; i++)
-            {
-                SetValue(value, i);
-            }
+            sessionOpen = 0.0;
         }
 
         #endregion
@@ -136,17 +141,22 @@ namespace CipherFeed.Indicators
 
         public double GetTWAP(int offset = 0)
         {
-            return GetValue(offset, LINE_TWAP);
+            return twap;
         }
 
         public double GetUpperStdDev(int offset = 0)
         {
-            return GetValue(offset, LINE_UPPER_STDDEV);
+            return upperStdDev;
         }
 
         public double GetLowerStdDev(int offset = 0)
         {
-            return GetValue(offset, LINE_LOWER_STDDEV);
+            return lowerStdDev;
+        }
+
+        public double GetSessionOpen()
+        {
+            return sessionOpen;
         }
 
         #endregion

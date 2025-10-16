@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.Linq;
 using TradingPlatform.BusinessLayer;
 
@@ -12,10 +11,13 @@ namespace CipherFeed.Indicators
 
         private Dictionary<double, double> volumeByPrice;
         private double tickSize;
+        private double sessionOpen;
+        private int barCount;
 
-        private const int LINE_VPOC = 0;
-        private const int LINE_VAH = 1;
-        private const int LINE_VAL = 2;
+        // Calculated values (in percentage space)
+        private double vpoc;
+        private double vah;
+        private double val;
 
         #endregion
 
@@ -24,12 +26,8 @@ namespace CipherFeed.Indicators
         public VPOCIndicator()
         {
             Name = "VPOC Indicator";
-            Description = "Volume Point of Control with Value Area High/Low";
+            Description = "Volume Point of Control with Value Area High/Low (in percentage space)";
             SeparateWindow = false;
-
-            AddLineSeries("VPOC", Color.Cyan, 2, LineStyle.Solid);
-            AddLineSeries("VAH", Color.Green, 1, LineStyle.Dot);
-            AddLineSeries("VAL", Color.Red, 1, LineStyle.Dot);
         }
 
         #endregion
@@ -40,6 +38,8 @@ namespace CipherFeed.Indicators
         {
             volumeByPrice = new Dictionary<double, double>();
             tickSize = Symbol?.TickSize ?? 0.01;
+            sessionOpen = 0.0;
+            barCount = 0;
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -51,7 +51,9 @@ namespace CipherFeed.Indicators
 
             if (volume <= 0 || double.IsNaN(volume))
             {
-                SetValueToAllLines(double.NaN);
+                vpoc = double.NaN;
+                vah = double.NaN;
+                val = double.NaN;
                 return;
             }
 
@@ -59,14 +61,37 @@ namespace CipherFeed.Indicators
             double low = Low();
             double close = Close();
 
-            if (double.IsNaN(high) || double.IsNaN(low) || high < low)
+            // Set session open on first bar
+            if (barCount == 0)
             {
-                SetValueToAllLines(double.NaN);
+                sessionOpen = (high + low + close) / 3.0;
+            }
+
+            if (sessionOpen == 0.0 || double.IsNaN(sessionOpen))
+            {
+                vpoc = double.NaN;
+                vah = double.NaN;
+                val = double.NaN;
                 return;
             }
 
+            if (double.IsNaN(high) || double.IsNaN(low) || high < low)
+            {
+                vpoc = double.NaN;
+                vah = double.NaN;
+                val = double.NaN;
+                return;
+            }
+
+            barCount++;
+
+            // Convert prices to percentage space
+            double highPct = (high - sessionOpen) / sessionOpen;
+            double lowPct = (low - sessionOpen) / sessionOpen;
+            double closePct = (close - sessionOpen) / sessionOpen;
+
             // Distribute volume across price levels in the bar
-            DistributeVolume(high, low, close, volume);
+            DistributeVolume(highPct, lowPct, closePct, volume);
 
             // Calculate VPOC, VAH, VAL
             CalculateVolumeProfile();
@@ -75,6 +100,8 @@ namespace CipherFeed.Indicators
         protected override void OnClear()
         {
             volumeByPrice?.Clear();
+            sessionOpen = 0.0;
+            barCount = 0;
         }
 
         #endregion
@@ -83,20 +110,23 @@ namespace CipherFeed.Indicators
 
         private void DistributeVolume(double high, double low, double close, double volume)
         {
-            // Round prices to tick size
-            double priceStart = Math.Floor(low / tickSize) * tickSize;
-            double priceEnd = Math.Ceiling(high / tickSize) * tickSize;
+            // Convert tick size to percentage space
+            double tickSizePct = tickSize / sessionOpen;
 
-            int numLevels = (int)Math.Round((priceEnd - priceStart) / tickSize) + 1;
+            // Round prices to tick size
+            double priceStart = Math.Floor(low / tickSizePct) * tickSizePct;
+            double priceEnd = Math.Ceiling(high / tickSizePct) * tickSizePct;
+
+            int numLevels = (int)Math.Round((priceEnd - priceStart) / tickSizePct) + 1;
 
             if (numLevels <= 0)
                 numLevels = 1;
 
             double volumePerLevel = volume / numLevels;
 
-            for (double price = priceStart; price <= priceEnd; price += tickSize)
+            for (double price = priceStart; price <= priceEnd; price += tickSizePct)
             {
-                double roundedPrice = Math.Round(price / tickSize) * tickSize;
+                double roundedPrice = Math.Round(price / tickSizePct) * tickSizePct;
 
                 if (!volumeByPrice.ContainsKey(roundedPrice))
                     volumeByPrice[roundedPrice] = 0;
@@ -109,13 +139,14 @@ namespace CipherFeed.Indicators
         {
             if (volumeByPrice.Count == 0)
             {
-                SetValueToAllLines(double.NaN);
+                vpoc = double.NaN;
+                vah = double.NaN;
+                val = double.NaN;
                 return;
             }
 
-            // Find VPOC (price with maximum volume)
-            double vpoc = volumeByPrice.OrderByDescending(kvp => kvp.Value).First().Key;
-            SetValue(vpoc, LINE_VPOC);
+            // Find VPOC (price with maximum volume) - already in percentage space
+            vpoc = volumeByPrice.OrderByDescending(kvp => kvp.Value).First().Key;
 
             // Calculate total volume
             double totalVolume = volumeByPrice.Values.Sum();
@@ -139,24 +170,13 @@ namespace CipherFeed.Indicators
 
             if (valueAreaPrices.Count > 0)
             {
-                double vah = valueAreaPrices.Max();
-                double val = valueAreaPrices.Min();
-
-                SetValue(vah, LINE_VAH);
-                SetValue(val, LINE_VAL);
+                vah = valueAreaPrices.Max();
+                val = valueAreaPrices.Min();
             }
             else
             {
-                SetValue(double.NaN, LINE_VAH);
-                SetValue(double.NaN, LINE_VAL);
-            }
-        }
-
-        private void SetValueToAllLines(double value)
-        {
-            for (int i = 0; i < 3; i++)
-            {
-                SetValue(value, i);
+                vah = double.NaN;
+                val = double.NaN;
             }
         }
 
@@ -166,17 +186,22 @@ namespace CipherFeed.Indicators
 
         public double GetVPOC(int offset = 0)
         {
-            return GetValue(offset, LINE_VPOC);
+            return vpoc;
         }
 
         public double GetVAH(int offset = 0)
         {
-            return GetValue(offset, LINE_VAH);
+            return vah;
         }
 
         public double GetVAL(int offset = 0)
         {
-            return GetValue(offset, LINE_VAL);
+            return val;
+        }
+
+        public double GetSessionOpen()
+        {
+            return sessionOpen;
         }
 
         #endregion
