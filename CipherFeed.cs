@@ -14,6 +14,83 @@ namespace CipherFeed
         ETH
     }
 
+    /// <summary>
+    /// Market data snapshot containing all orderflow features for a single symbol at a point in time
+    /// </summary>
+    public class MarketDataSnapshot
+    {
+        public DateTime Timestamp { get; set; }
+        public string SymbolName { get; set; }
+        
+        // Price and Trade Information
+        public double Last { get; set; }
+        public double LastSize { get; set; }
+        public AggressorFlag Aggressor { get; set; }
+        public TickDirection TickDirection { get; set; }
+        
+        // Bid/Ask Information
+        public double BidPrice { get; set; }
+        public double BidSize { get; set; }
+        public TickDirection BidTickDirection { get; set; }
+        public double AskPrice { get; set; }
+        public double AskSize { get; set; }
+        public TickDirection AskTickDirection { get; set; }
+        
+        // Volume and Delta
+        public double Volume { get; set; }
+        public long Trades { get; set; }
+        public double Delta { get; set; }
+        public double CumulativeDelta { get; set; }
+        
+        // Buy/Sell Volume
+        public double BuyVolume { get; set; }
+        public double BuyVolumePercent { get; set; }
+        public double SellVolume { get; set; }
+        public double SellVolumePercent { get; set; }
+        
+        // Buy/Sell Trades
+        public int BuyTrades { get; set; }
+        public int SellTrades { get; set; }
+        
+        // Imbalance
+        public double Imbalance { get; set; }
+        public double ImbalancePercent { get; set; }
+        
+        // Average Sizes
+        public double AverageSize { get; set; }
+        public double AverageBuySize { get; set; }
+        public double AverageSellSize { get; set; }
+        
+        // Max Trade Volume
+        public double MaxOneTradeVolume { get; set; }
+        public double MaxOneTradeVolumePercent { get; set; }
+        
+        // Filtered Volume
+        public double FilteredVolume { get; set; }
+        public double FilteredVolumePercent { get; set; }
+        public double FilteredBuyVolume { get; set; }
+        public double FilteredBuyVolumePercent { get; set; }
+        public double FilteredSellVolume { get; set; }
+        public double FilteredSellVolumePercent { get; set; }
+        
+        // VWAP Bid/Ask
+        public double VWAPBid { get; set; }
+        public double VWAPAsk { get; set; }
+        
+        // Cumulative Sizes
+        public double CumulativeSizeBid { get; set; }
+        public double CumulativeSizeAsk { get; set; }
+        public double CumulativeSize { get; set; }
+        public double AskTradeSize { get; set; }
+        
+        // Time Information
+        public DateTime TimeBid { get; set; }
+        public DateTime TimeAsk { get; set; }
+        
+        // Session Open (for percentage calculations)
+        public double SessionOpen { get; set; }
+    }
+
     public class CipherFeed : Strategy
     {
         [InputParameter("Account", 1)]
@@ -21,6 +98,9 @@ namespace CipherFeed
 
         [InputParameter("Log Interval (seconds)", 2)]
         public int LogIntervalSeconds { get; set; } = 5;
+
+        [InputParameter("Log Orderflow Features", 3)]
+        public bool LogOrderflowFeatures { get; set; } = false;
 
         private readonly string[] symbolNames = { "MNQ", "MES", "M2K", "MYM", "ENQ", "EP", "RTY", "YM" };
         private readonly Dictionary<string, Symbol> symbols = new Dictionary<string, Symbol>();
@@ -30,6 +110,16 @@ namespace CipherFeed
         // Current prices for batch logging
         private readonly Dictionary<Symbol, double> currentPrices = new Dictionary<Symbol, double>();
         private DateTime lastLogTime;
+        
+        // Market data snapshots per symbol
+        private readonly Dictionary<Symbol, MarketDataSnapshot> latestSnapshots = new Dictionary<Symbol, MarketDataSnapshot>();
+        
+        // Cumulative tracking for orderflow features
+        private readonly Dictionary<Symbol, double> cumulativeDelta = new Dictionary<Symbol, double>();
+        private readonly Dictionary<Symbol, double> cumulativeBuyVolume = new Dictionary<Symbol, double>();
+        private readonly Dictionary<Symbol, double> cumulativeSellVolume = new Dictionary<Symbol, double>();
+        private readonly Dictionary<Symbol, double> cumulativeSizeBid = new Dictionary<Symbol, double>();
+        private readonly Dictionary<Symbol, double> cumulativeSizeAsk = new Dictionary<Symbol, double>();
         
         // Indicators per symbol
         private readonly Dictionary<Symbol, HistoricalData> historicalDataCache = new Dictionary<Symbol, HistoricalData>();
@@ -110,8 +200,16 @@ namespace CipherFeed
                 Symbol symbol = candidates.First();
                 symbols[symbolRoot] = symbol;
                 symbol.NewLast += OnNewLast;
+                symbol.NewQuote += OnNewQuote;
                 sessionOpenInitialized[symbol] = false;
                 currentPrices[symbol] = 0.0;
+                
+                // Initialize cumulative tracking
+                cumulativeDelta[symbol] = 0.0;
+                cumulativeBuyVolume[symbol] = 0.0;
+                cumulativeSellVolume[symbol] = 0.0;
+                cumulativeSizeBid[symbol] = 0.0;
+                cumulativeSizeAsk[symbol] = 0.0;
                 
                 // Try to get session open from historical data
                 InitializeSessionOpen(symbol);
@@ -263,6 +361,9 @@ namespace CipherFeed
 
             // Update current price
             currentPrices[symbol] = last.Price;
+            
+            // Update market data snapshot with trade information
+            UpdateSnapshotFromLast(symbol, last);
 
             // Check if it's time to log
             if ((last.Time - lastLogTime).TotalSeconds >= LogIntervalSeconds)
@@ -270,6 +371,103 @@ namespace CipherFeed
                 LogAllSymbols(last.Time);
                 lastLogTime = last.Time;
             }
+        }
+
+        private void OnNewQuote(Symbol symbol, Quote quote)
+        {
+            if (symbol == null || quote == null)
+                return;
+                
+            // Update market data snapshot with bid/ask information
+            UpdateSnapshotFromQuote(symbol, quote);
+        }
+
+        private void UpdateSnapshotFromLast(Symbol symbol, Last last)
+        {
+            if (!latestSnapshots.ContainsKey(symbol))
+            {
+                latestSnapshots[symbol] = new MarketDataSnapshot
+                {
+                    SymbolName = symbol.Name,
+                    SessionOpen = sessionOpenPrices.ContainsKey(symbol) ? sessionOpenPrices[symbol] : 0.0
+                };
+            }
+
+            var snapshot = latestSnapshots[symbol];
+            snapshot.Timestamp = last.Time;
+            snapshot.Last = last.Price;
+            snapshot.LastSize = last.Size;
+            snapshot.Aggressor = last.AggressorFlag;
+            snapshot.TickDirection = last.TickDirection;
+            
+            // Update volume and trade data from Symbol properties
+            snapshot.Volume = symbol.Volume;
+            snapshot.Trades = symbol.Trades;
+            snapshot.Delta = symbol.Delta;
+            
+            // Calculate buy/sell volumes based on aggressor
+            double tradeDelta = 0;
+            if (last.AggressorFlag == AggressorFlag.Buy)
+            {
+                tradeDelta = last.Size;
+                cumulativeBuyVolume[symbol] += last.Size;
+            }
+            else if (last.AggressorFlag == AggressorFlag.Sell)
+            {
+                tradeDelta = -last.Size;
+                cumulativeSellVolume[symbol] += last.Size;
+            }
+            
+            // Update cumulative delta
+            cumulativeDelta[symbol] += tradeDelta;
+            snapshot.CumulativeDelta = cumulativeDelta[symbol];
+            
+            snapshot.BuyVolume = cumulativeBuyVolume[symbol];
+            snapshot.SellVolume = cumulativeSellVolume[symbol];
+            
+            // Calculate percentages
+            double totalVolume = snapshot.BuyVolume + snapshot.SellVolume;
+            if (totalVolume > 0)
+            {
+                snapshot.BuyVolumePercent = (snapshot.BuyVolume / totalVolume) * 100;
+                snapshot.SellVolumePercent = (snapshot.SellVolume / totalVolume) * 100;
+            }
+            
+            // Calculate imbalance
+            snapshot.Imbalance = snapshot.BuyVolume - snapshot.SellVolume;
+            if (totalVolume > 0)
+            {
+                snapshot.ImbalancePercent = (snapshot.Imbalance / totalVolume) * 100;
+            }
+        }
+
+        private void UpdateSnapshotFromQuote(Symbol symbol, Quote quote)
+        {
+            if (!latestSnapshots.ContainsKey(symbol))
+            {
+                latestSnapshots[symbol] = new MarketDataSnapshot
+                {
+                    SymbolName = symbol.Name,
+                    SessionOpen = sessionOpenPrices.ContainsKey(symbol) ? sessionOpenPrices[symbol] : 0.0
+                };
+            }
+
+            var snapshot = latestSnapshots[symbol];
+            snapshot.Timestamp = quote.Time;
+            snapshot.BidPrice = quote.Bid;
+            snapshot.BidSize = quote.BidSize;
+            snapshot.BidTickDirection = quote.BidTickDirection;
+            snapshot.AskPrice = quote.Ask;
+            snapshot.AskSize = quote.AskSize;
+            snapshot.AskTickDirection = quote.AskTickDirection;
+            snapshot.TimeBid = quote.Time;
+            snapshot.TimeAsk = quote.Time;
+            
+            // Update cumulative bid/ask sizes
+            cumulativeSizeBid[symbol] += quote.BidSize;
+            cumulativeSizeAsk[symbol] += quote.AskSize;
+            snapshot.CumulativeSizeBid = cumulativeSizeBid[symbol];
+            snapshot.CumulativeSizeAsk = cumulativeSizeAsk[symbol];
         }
 
         private void LogAllSymbols(DateTime timestamp)
@@ -420,11 +618,68 @@ namespace CipherFeed
                     }
                 }
 
+                // Optionally log orderflow features
+                if (LogOrderflowFeatures)
+                {
+                    LogOrderflowFeaturesForSymbol(symbol);
+                }
+
                 Log($"└───────────────────────────────────────────────────────────────────────────────┘", StrategyLoggingLevel.Trading);
                 Log("", StrategyLoggingLevel.Trading);
             }
 
             Log($"═══════════════════════════════════════════════════════════════════════════════", StrategyLoggingLevel.Trading);
+        }
+
+        /// <summary>
+        /// Get the latest market data snapshot for a symbol
+        /// </summary>
+        public MarketDataSnapshot GetMarketDataSnapshot(Symbol symbol)
+        {
+            return latestSnapshots.ContainsKey(symbol) ? latestSnapshots[symbol] : null;
+        }
+
+        /// <summary>
+        /// Get the latest market data snapshot for a symbol by root name
+        /// </summary>
+        public MarketDataSnapshot GetMarketDataSnapshot(string symbolRoot)
+        {
+            if (symbols.ContainsKey(symbolRoot))
+            {
+                return GetMarketDataSnapshot(symbols[symbolRoot]);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Log orderflow features for a specific symbol
+        /// </summary>
+        private void LogOrderflowFeaturesForSymbol(Symbol symbol)
+        {
+            if (!latestSnapshots.ContainsKey(symbol))
+                return;
+
+            var snapshot = latestSnapshots[symbol];
+            
+            Log($"│  📋 Orderflow Features:", StrategyLoggingLevel.Trading);
+            Log($"│     Volume:       {snapshot.Volume,10:F0}  │  Trades: {snapshot.Trades,8}", StrategyLoggingLevel.Trading);
+            Log($"│     Buy Vol:      {snapshot.BuyVolume,10:F0} ({snapshot.BuyVolumePercent,5:F1}%)", StrategyLoggingLevel.Trading);
+            Log($"│     Sell Vol:     {snapshot.SellVolume,10:F0} ({snapshot.SellVolumePercent,5:F1}%)", StrategyLoggingLevel.Trading);
+            Log($"│     Delta:        {snapshot.Delta,10:F0}  │  Cumulative: {snapshot.CumulativeDelta,10:F0}", StrategyLoggingLevel.Trading);
+            Log($"│     Imbalance:    {snapshot.Imbalance,10:F0} ({snapshot.ImbalancePercent,6:F2}%)", StrategyLoggingLevel.Trading);
+            
+            if (snapshot.BidSize > 0 || snapshot.AskSize > 0)
+            {
+                Log($"│     Bid:          {snapshot.BidPrice,10:F2} x {snapshot.BidSize,8:F0}", StrategyLoggingLevel.Trading);
+                Log($"│     Ask:          {snapshot.AskPrice,10:F2} x {snapshot.AskSize,8:F0}", StrategyLoggingLevel.Trading);
+            }
+            
+            if (snapshot.LastSize > 0)
+            {
+                string aggressorStr = snapshot.Aggressor == AggressorFlag.Buy ? "BUY" :
+                                     snapshot.Aggressor == AggressorFlag.Sell ? "SELL" : "N/A";
+                Log($"│     Last Trade:   {snapshot.Last,10:F2} x {snapshot.LastSize,8:F0} ({aggressorStr})", StrategyLoggingLevel.Trading);
+            }
         }
 
         private TradingSession GetSession(DateTime utcTime)
@@ -468,6 +723,14 @@ namespace CipherFeed
                 sessionOpenPrices.Clear();
                 sessionOpenInitialized.Clear();
                 currentPrices.Clear();
+                latestSnapshots.Clear();
+                
+                // Reset cumulative tracking
+                cumulativeDelta.Clear();
+                cumulativeBuyVolume.Clear();
+                cumulativeSellVolume.Clear();
+                cumulativeSizeBid.Clear();
+                cumulativeSizeAsk.Clear();
 
                 currentSession = newSession;
                 sessionStartTime = newSessionStart;
@@ -478,6 +741,14 @@ namespace CipherFeed
                 {
                     sessionOpenInitialized[symbol] = false;
                     currentPrices[symbol] = 0.0;
+                    
+                    // Re-initialize cumulative tracking
+                    cumulativeDelta[symbol] = 0.0;
+                    cumulativeBuyVolume[symbol] = 0.0;
+                    cumulativeSellVolume[symbol] = 0.0;
+                    cumulativeSizeBid[symbol] = 0.0;
+                    cumulativeSizeAsk[symbol] = 0.0;
+                    
                     InitializeSessionOpen(symbol);
                     
                     // Clean up old indicators
@@ -505,6 +776,7 @@ namespace CipherFeed
             foreach (var symbol in symbols.Values)
             {
                 symbol.NewLast -= OnNewLast;
+                symbol.NewQuote -= OnNewQuote;
                 
                 // Clean up indicators
                 if (historicalDataCache.ContainsKey(symbol))
@@ -527,6 +799,12 @@ namespace CipherFeed
             vpocIndicators.Clear();
             twapIndicators.Clear();
             currentPrices.Clear();
+            latestSnapshots.Clear();
+            cumulativeDelta.Clear();
+            cumulativeBuyVolume.Clear();
+            cumulativeSellVolume.Clear();
+            cumulativeSizeBid.Clear();
+            cumulativeSizeAsk.Clear();
             
             Log("Stopped", StrategyLoggingLevel.Trading);
         }
