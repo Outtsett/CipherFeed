@@ -1,254 +1,182 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
+using TradingPlatform.BusinessLayer;
 
 namespace CipherFeed.Indicators
 {
-    /// <summary>
-    /// VPOC (Volume Point of Control) and Value Area Indicator
-    /// Calculates the price level with the highest traded volume and the value area boundaries (VAH/VAL)
-    /// </summary>
-    public class VPOCIndicator
+    public class VPOCIndicator : Indicator
     {
-        #region Constants
+        #region Private Fields
 
-        // Percentage of volume to include in value area
-        private const double VALUE_AREA_VOLUME_PERCENT = 0.70;
+        private Dictionary<double, double> volumeByPrice;
+        private double tickSize;
 
-        #endregion
-
-        #region Properties
-
-        /// <summary>
-        /// Volume Point of Control - price with highest volume
-        /// </summary>
-        public double VPOC { get; private set; }
-
-        /// <summary>
-        /// Volume at the VPOC level
-        /// </summary>
-        public double VPOCVolume { get; private set; }
-
-        /// <summary>
-        /// Value Area High - upper boundary of value area
-        /// </summary>
-        public double VAH { get; private set; }
-
-        /// <summary>
-        /// Value Area Low - lower boundary of value area
-        /// </summary>
-        public double VAL { get; private set; }
-
-        /// <summary>
-        /// Value area range as percentage
-        /// </summary>
-        public double ValueAreaRangePercent { get; private set; }
-
-        /// <summary>
-        /// VAH distance from VPOC as percentage
-        /// </summary>
-        public double VAHDistancePercent { get; private set; }
-
-        /// <summary>
-        /// VAL distance from VPOC as percentage
-        /// </summary>
-        public double VALDistancePercent { get; private set; }
+        private const int LINE_VPOC = 0;
+        private const int LINE_VAH = 1;
+        private const int LINE_VAL = 2;
 
         #endregion
 
-        #region Calculation
+        #region Constructor
 
-        /// <summary>
-        /// Calculate VPOC and Value Area from volume profile data
-        /// </summary>
-        /// <param name="volumeProfile">Dictionary of price levels and their volumes</param>
-        public void Calculate(Dictionary<double, double> volumeProfile)
+        public VPOCIndicator()
         {
-            if (volumeProfile == null || volumeProfile.Count == 0)
-            {
-                return;
-            }
+            Name = "VPOC Indicator";
+            Description = "Volume Point of Control with Value Area High/Low";
+            SeparateWindow = false;
 
-            // Find price level with maximum volume (VPOC)
-            KeyValuePair<double, double> maxVolumeEntry = volumeProfile
-                .OrderByDescending(kvp => kvp.Value)
-                .FirstOrDefault();
-
-            VPOC = maxVolumeEntry.Key;
-            VPOCVolume = maxVolumeEntry.Value;
-
-            // Calculate Value Area (VAH and VAL)
-            CalculateValueArea(volumeProfile);
+            AddLineSeries("VPOC", Color.Cyan, 2, LineStyle.Solid);
+            AddLineSeries("VAH", Color.Green, 1, LineStyle.Dot);
+            AddLineSeries("VAL", Color.Red, 1, LineStyle.Dot);
         }
 
-        /// <summary>
-        /// Calculate Value Area High (VAH) and Value Area Low (VAL)
-        /// The value area contains 70% of the traded volume
-        /// </summary>
-        private void CalculateValueArea(Dictionary<double, double> volumeProfile)
+        #endregion
+
+        #region Lifecycle Methods
+
+        protected override void OnInit()
         {
-            if (volumeProfile == null || volumeProfile.Count == 0 || VPOC == 0)
+            volumeByPrice = new Dictionary<double, double>();
+            tickSize = Symbol?.TickSize ?? 0.01;
+        }
+
+        protected override void OnUpdate(UpdateArgs args)
+        {
+            if (Count < 1)
+                return;
+
+            double volume = Volume();
+
+            if (volume <= 0 || double.IsNaN(volume))
             {
+                SetValueToAllLines(double.NaN);
                 return;
             }
 
-            // Sort volume profile by price
-            List<KeyValuePair<double, double>> sortedProfile = volumeProfile
-                .OrderBy(kvp => kvp.Key)
-                .ToList();
+            double high = High();
+            double low = Low();
+            double close = Close();
+
+            if (double.IsNaN(high) || double.IsNaN(low) || high < low)
+            {
+                SetValueToAllLines(double.NaN);
+                return;
+            }
+
+            // Distribute volume across price levels in the bar
+            DistributeVolume(high, low, close, volume);
+
+            // Calculate VPOC, VAH, VAL
+            CalculateVolumeProfile();
+        }
+
+        protected override void OnClear()
+        {
+            volumeByPrice?.Clear();
+        }
+
+        #endregion
+
+        #region Volume Profile Calculation
+
+        private void DistributeVolume(double high, double low, double close, double volume)
+        {
+            // Round prices to tick size
+            double priceStart = Math.Floor(low / tickSize) * tickSize;
+            double priceEnd = Math.Ceiling(high / tickSize) * tickSize;
+
+            int numLevels = (int)Math.Round((priceEnd - priceStart) / tickSize) + 1;
+
+            if (numLevels <= 0)
+                numLevels = 1;
+
+            double volumePerLevel = volume / numLevels;
+
+            for (double price = priceStart; price <= priceEnd; price += tickSize)
+            {
+                double roundedPrice = Math.Round(price / tickSize) * tickSize;
+
+                if (!volumeByPrice.ContainsKey(roundedPrice))
+                    volumeByPrice[roundedPrice] = 0;
+
+                volumeByPrice[roundedPrice] += volumePerLevel;
+            }
+        }
+
+        private void CalculateVolumeProfile()
+        {
+            if (volumeByPrice.Count == 0)
+            {
+                SetValueToAllLines(double.NaN);
+                return;
+            }
+
+            // Find VPOC (price with maximum volume)
+            double vpoc = volumeByPrice.OrderByDescending(kvp => kvp.Value).First().Key;
+            SetValue(vpoc, LINE_VPOC);
 
             // Calculate total volume
-            double totalVolume = sortedProfile.Sum(kvp => kvp.Value);
-            double targetVolume = totalVolume * VALUE_AREA_VOLUME_PERCENT;
+            double totalVolume = volumeByPrice.Values.Sum();
 
-            // Start from VPOC and expand outward to capture 70% of volume
-            int vpocIndex = sortedProfile.FindIndex(kvp => kvp.Key == VPOC);
-            if (vpocIndex == -1)
+            // Sort prices by volume descending
+            var sortedByVolume = volumeByPrice.OrderByDescending(kvp => kvp.Value).ToList();
+
+            // Build value area (70% of volume)
+            double targetVolume = totalVolume * 0.70;
+            double accumulatedVolume = 0;
+            List<double> valueAreaPrices = new List<double>();
+
+            foreach (var kvp in sortedByVolume)
             {
-                vpocIndex = sortedProfile.Count / 2;
-            }
+                valueAreaPrices.Add(kvp.Key);
+                accumulatedVolume += kvp.Value;
 
-            double accumulatedVolume = sortedProfile[vpocIndex].Value;
-            int lowIndex = vpocIndex;
-            int highIndex = vpocIndex;
-
-            // Expand the value area until we reach 70% of volume
-            while (accumulatedVolume < targetVolume)
-            {
-                double volumeAbove = (highIndex < sortedProfile.Count - 1)
-                    ? sortedProfile[highIndex + 1].Value
-                    : 0;
-                double volumeBelow = (lowIndex > 0)
-                    ? sortedProfile[lowIndex - 1].Value
-                    : 0;
-
-                if (volumeAbove >= volumeBelow && highIndex < sortedProfile.Count - 1)
-                {
-                    highIndex++;
-                    accumulatedVolume += sortedProfile[highIndex].Value;
-                }
-                else if (lowIndex > 0)
-                {
-                    lowIndex--;
-                    accumulatedVolume += sortedProfile[lowIndex].Value;
-                }
-                else
-                {
+                if (accumulatedVolume >= targetVolume)
                     break;
-                }
             }
 
-            VAL = sortedProfile[lowIndex].Key;
-            VAH = sortedProfile[highIndex].Key;
-
-            // Calculate percentage-based value area metrics
-            double valueAreaRange = VAH - VAL;
-            double midPoint = (VAH + VAL) / 2;
-
-            if (midPoint > 0)
+            if (valueAreaPrices.Count > 0)
             {
-                ValueAreaRangePercent = valueAreaRange / midPoint * 100;
+                double vah = valueAreaPrices.Max();
+                double val = valueAreaPrices.Min();
+
+                SetValue(vah, LINE_VAH);
+                SetValue(val, LINE_VAL);
             }
-
-            if (VPOC > 0)
+            else
             {
-                VAHDistancePercent = (VAH - VPOC) / VPOC * 100;
-                VALDistancePercent = (VPOC - VAL) / VPOC * 100;
+                SetValue(double.NaN, LINE_VAH);
+                SetValue(double.NaN, LINE_VAL);
             }
         }
 
-        /// <summary>
-        /// Reset all calculated values
-        /// </summary>
-        public void Reset()
+        private void SetValueToAllLines(double value)
         {
-            VPOC = 0;
-            VPOCVolume = 0;
-            VAH = 0;
-            VAL = 0;
-            ValueAreaRangePercent = 0;
-            VAHDistancePercent = 0;
-            VALDistancePercent = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                SetValue(value, i);
+            }
         }
 
         #endregion
 
-        #region Helper Methods - VPOC
+        #region Public Methods
 
-        /// <summary>
-        /// Check if price is above VPOC
-        /// </summary>
-        public bool IsPriceAboveVPOC(double price)
+        public double GetVPOC(int offset = 0)
         {
-            return VPOC > 0 && price > VPOC;
+            return GetValue(offset, LINE_VPOC);
         }
 
-        /// <summary>
-        /// Get distance from VPOC in percentage
-        /// </summary>
-        public double GetDistanceFromVPOC(double price)
+        public double GetVAH(int offset = 0)
         {
-            return VPOC == 0 ? 0 : (price - VPOC) / VPOC * 100;
+            return GetValue(offset, LINE_VAH);
         }
 
-        /// <summary>
-        /// Check if price is near VPOC (within threshold)
-        /// </summary>
-        public bool IsPriceNearVPOC(double price, double thresholdPercent = 0.1)
+        public double GetVAL(int offset = 0)
         {
-            return Math.Abs(GetDistanceFromVPOC(price)) <= thresholdPercent;
-        }
-
-        #endregion
-
-        #region Helper Methods - Value Area
-
-        /// <summary>
-        /// Check if price is in value area
-        /// </summary>
-        public bool IsPriceInValueArea(double price)
-        {
-            return price >= VAL && price <= VAH;
-        }
-
-        /// <summary>
-        /// Get distance from VAH in percentage
-        /// </summary>
-        public double GetDistanceFromVAH(double price)
-        {
-            return VAH == 0 ? 0 : (price - VAH) / VAH * 100;
-        }
-
-        /// <summary>
-        /// Get distance from VAL in percentage
-        /// </summary>
-        public double GetDistanceFromVAL(double price)
-        {
-            return VAL == 0 ? 0 : (price - VAL) / VAL * 100;
-        }
-
-        /// <summary>
-        /// Check if price is near VAH (within threshold)
-        /// </summary>
-        public bool IsPriceNearVAH(double price, double thresholdPercent = 0.1)
-        {
-            return Math.Abs(GetDistanceFromVAH(price)) <= thresholdPercent;
-        }
-
-        /// <summary>
-        /// Check if price is near VAL (within threshold)
-        /// </summary>
-        public bool IsPriceNearVAL(double price, double thresholdPercent = 0.1)
-        {
-            return Math.Abs(GetDistanceFromVAL(price)) <= thresholdPercent;
-        }
-
-        /// <summary>
-        /// Get value area position description
-        /// </summary>
-        public string GetValueAreaPosition(double price)
-        {
-            return price > VAH ? "ABOVE Value Area (Overbought)" : price < VAL ? "BELOW Value Area (Oversold)" : "WITHIN Value Area (Balanced)";
+            return GetValue(offset, LINE_VAL);
         }
 
         #endregion

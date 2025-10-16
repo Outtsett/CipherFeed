@@ -1,328 +1,203 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.Drawing;
+using TradingPlatform.BusinessLayer;
 
 namespace CipherFeed.Indicators
 {
-    /// <summary>
-    /// Price and volume data point for VWAP calculations
-    /// </summary>
-    public class PriceVolumePoint
+    public class SessionAnchoredVWAP : Indicator
     {
-        public DateTime Time { get; set; }
-        public double Price { get; set; }
-        public double Volume { get; set; }
-        public double TypicalPrice { get; set; } // (High + Low + Close) / 3
-        public double High { get; set; }
-        public double Low { get; set; }
-    }
+        #region Input Parameters
 
-    /// <summary>
-    /// Price and time data point for TWAP calculations
-    /// </summary>
-    public class PriceTimePoint
-    {
-        public DateTime Time { get; set; }
-        public double Price { get; set; }
-    }
+        [InputParameter("Use Typical Price", 0)]
+        public bool UseTypicalPrice { get; set; } = true;
 
-    /// <summary>
-    /// Trading session type
-    /// </summary>
-    public enum TradingSession
-    {
-        RTH,  // Regular Trading Hours
-        ETH   // Extended Trading Hours
-    }
+        [InputParameter("Show Standard Deviation Bands", 1)]
+        public bool ShowStdDevBands { get; set; } = true;
 
-    /// <summary>
-    /// VWAP (Volume-Weighted Average Price) Indicator
-    /// Calculates VWAP and standard deviation bands
-    /// </summary>
-    public class VWAPIndicator
-    {
-        #region Constants
-
-        // Standard deviation multiplier for VWAP bands
-        private const double STD_DEV_MULTIPLIER = 2.0;
-
-        // Session times (in local time)
-        // RTH: 5:00 AM - 1:45 PM
-        // ETH: 3:00 PM - 5:00 AM (next day)
-        private static readonly TimeSpan RTH_START = new(5, 0, 0);    // 5:00 AM
-        private static readonly TimeSpan RTH_END = new(13, 45, 0);    // 1:45 PM
-        private static readonly TimeSpan ETH_START = new(15, 0, 0);   // 3:00 PM
-        private static readonly TimeSpan ETH_END = new(5, 0, 0);      // 5:00 AM (next day)
+        [InputParameter("Show MPD Bands", 2)]
+        public bool ShowMPDBands { get; set; } = true;
 
         #endregion
 
-        #region Properties
+        #region Private Fields
 
-        /// <summary>
-        /// Volume-Weighted Average Price
-        /// </summary>
-        public double VWAP { get; private set; }
+        private double cumulativePriceVolume;
+        private double cumulativeVolume;
+        private double cumulativePriceSquaredVolume;
+        private int barCount;
 
-        /// <summary>
-        /// Upper 2σ standard deviation band
-        /// </summary>
-        public double UpperStdDev { get; private set; }
+        private double sessionHigh;
+        private double sessionLow;
 
-        /// <summary>
-        /// Lower 2σ standard deviation band
-        /// </summary>
-        public double LowerStdDev { get; private set; }
-
-        /// <summary>
-        /// Upper MPD (Maximum Permissible Deviation) band
-        /// Calculated as VWAP + MPD where MPD = (period high - period low) / 2
-        /// </summary>
-        public double UpperMPD { get; private set; }
-
-        /// <summary>
-        /// Lower MPD band
-        /// Calculated as VWAP - MPD where MPD = (period high - period low) / 2
-        /// </summary>
-        public double LowerMPD { get; private set; }
-
-        /// <summary>
-        /// Standard deviation as percentage (2σ)
-        /// </summary>
-        public double StdDevPercent { get; private set; }
-
-        /// <summary>
-        /// MPD as percentage
-        /// </summary>
-        public double MPDPercent { get; private set; }
-
-        /// <summary>
-        /// MPD value (period high - period low) / 2
-        /// </summary>
-        public double MPD { get; private set; }
-
-        /// <summary>
-        /// Current trading session
-        /// </summary>
-        public TradingSession CurrentSession { get; private set; }
+        private const int LINE_VWAP = 0;
+        private const int LINE_UPPER_STDDEV = 1;
+        private const int LINE_LOWER_STDDEV = 2;
+        private const int LINE_UPPER_MPD = 3;
+        private const int LINE_LOWER_MPD = 4;
 
         #endregion
 
-        #region Session Detection
+        #region Constructor
 
-        /// <summary>
-        /// Determine which trading session a timestamp belongs to
-        /// RTH: 5:00 AM - 1:45 PM
-        /// ETH: 3:00 PM - 5:00 AM (next day)
-        /// </summary>
-        public static TradingSession GetTradingSession(DateTime timestamp)
+        public SessionAnchoredVWAP()
         {
-            TimeSpan time = timestamp.TimeOfDay;
+            Name = "Session Anchored VWAP";
+            Description = "Volume-Weighted Average Price with 2σ Std Dev and MPD bands";
+            SeparateWindow = false;
 
-            // RTH: 5:00 AM - 1:45 PM
-            if (time >= RTH_START && time <= RTH_END)
-            {
-                return TradingSession.RTH;
-            }
-            // ETH: 3:00 PM - 5:00 AM (crosses midnight)
-            else if (time >= ETH_START || time < ETH_END)
-            {
-                return TradingSession.ETH;
-            }
-
-            // Default to RTH for gap period (1:45 PM - 3:00 PM)
-            return TradingSession.RTH;
-        }
-
-        /// <summary>
-        /// Get the session start time for a given timestamp
-        /// </summary>
-        public static DateTime GetSessionStart(DateTime timestamp)
-        {
-            TradingSession session = GetTradingSession(timestamp);
-            TimeSpan time = timestamp.TimeOfDay;
-
-            if (session == TradingSession.RTH)
-            {
-                // RTH starts at 5:00 AM on the same day
-                return timestamp.Date.Add(RTH_START);
-            }
-            else // ETH
-            {
-                // If current time is before 5 AM, session started previous day at 3 PM
-                return time < ETH_END
-                    ? timestamp.Date.AddDays(-1).Add(ETH_START)
-                    // Otherwise, session starts today at 3 PM
-                    : timestamp.Date.Add(ETH_START);
-            }
-        }
-
-        /// <summary>
-        /// Filter price-volume points to only include data from the current session
-        /// </summary>
-        private static List<PriceVolumePoint> FilterByCurrentSession(List<PriceVolumePoint> priceVolumePoints, DateTime currentTime)
-        {
-            if (priceVolumePoints == null || priceVolumePoints.Count == 0)
-            {
-                return priceVolumePoints;
-            }
-
-            DateTime sessionStart = GetSessionStart(currentTime);
-            TradingSession currentSession = GetTradingSession(currentTime);
-
-            // Filter points that are:
-            // 1. After session start
-            // 2. In the same session as current time
-            return priceVolumePoints
-                .Where(point => point.Time >= sessionStart && GetTradingSession(point.Time) == currentSession)
-                .ToList();
+            AddLineSeries("VWAP", Color.Yellow, 2, LineStyle.Solid);
+            AddLineSeries("Upper Std Dev 2σ", Color.Orange, 1, LineStyle.Solid);
+            AddLineSeries("Lower Std Dev 2σ", Color.Orange, 1, LineStyle.Solid);
+            AddLineSeries("Upper MPD", Color.Red, 2, LineStyle.Dot);
+            AddLineSeries("Lower MPD", Color.Red, 2, LineStyle.Dot);
         }
 
         #endregion
 
-        #region Calculation
+        #region Lifecycle Methods
 
-        /// <summary>
-        /// Calculate VWAP and bands from price-volume data
-        /// Automatically filters data to current session period (RTH or ETH)
-        /// </summary>
-        /// <param name="priceVolumePoints">List of price-volume data points</param>
-        public void Calculate(List<PriceVolumePoint> priceVolumePoints)
+        protected override void OnInit()
         {
-            Calculate(priceVolumePoints, DateTime.Now);
+            cumulativePriceVolume = 0.0;
+            cumulativeVolume = 0.0;
+            cumulativePriceSquaredVolume = 0.0;
+            barCount = 0;
+            sessionHigh = double.MinValue;
+            sessionLow = double.MaxValue;
         }
 
-        /// <summary>
-        /// Calculate VWAP and bands from price-volume data with explicit current time
-        /// Filters data to the session period containing currentTime
-        /// </summary>
-        /// <param name="priceVolumePoints">List of price-volume data points</param>
-        /// <param name="currentTime">Current time to determine active session</param>
-        public void Calculate(List<PriceVolumePoint> priceVolumePoints, DateTime currentTime)
+        protected override void OnUpdate(UpdateArgs args)
         {
-            if (priceVolumePoints == null || priceVolumePoints.Count == 0)
+            if (Count < 1)
+                return;
+
+            double volume = Volume();
+
+            if (volume <= 0 || double.IsNaN(volume))
             {
+                SetValueToAllLines(double.NaN);
                 return;
             }
 
-            // Determine current session
-            CurrentSession = GetTradingSession(currentTime);
+            double high = High();
+            double low = Low();
 
-            // Filter data to only include current session
-            List<PriceVolumePoint> sessionData = FilterByCurrentSession(priceVolumePoints, currentTime);
+            if (high > sessionHigh)
+                sessionHigh = high;
+            if (low < sessionLow)
+                sessionLow = low;
 
-            if (sessionData.Count == 0)
+            double price;
+            if (UseTypicalPrice)
             {
+                double close = Close();
+                price = (high + low + close) / 3.0;
+            }
+            else
+            {
+                price = Close();
+            }
+
+            if (double.IsNaN(price) || price <= 0)
+            {
+                SetValueToAllLines(double.NaN);
                 return;
             }
 
-            // Calculate VWAP: Sum(Price * Volume) / Sum(Volume)
-            double sumPriceVolume = 0;
-            double sumVolume = 0;
-            double periodHigh = double.MinValue;
-            double periodLow = double.MaxValue;
+            double priceVolume = price * volume;
+            cumulativePriceVolume += priceVolume;
+            cumulativeVolume += volume;
+            cumulativePriceSquaredVolume += price * priceVolume;
+            barCount++;
 
-            foreach (PriceVolumePoint point in sessionData)
+            double vwap = cumulativePriceVolume / cumulativeVolume;
+            SetValue(vwap, LINE_VWAP);
+
+            if (ShowStdDevBands && barCount > 1)
             {
-                sumPriceVolume += point.TypicalPrice * point.Volume;
-                sumVolume += point.Volume;
+                double variance = (cumulativePriceSquaredVolume / cumulativeVolume) - (vwap * vwap);
 
-                // Track period high and low
-                if (point.High > periodHigh)
-                {
-                    periodHigh = point.High;
-                }
-                if (point.Low < periodLow)
-                {
-                    periodLow = point.Low;
-                }
-            }
+                if (variance < 0)
+                    variance = 0;
 
-            if (sumVolume > 0)
-            {
-                VWAP = sumPriceVolume / sumVolume;
-
-                // Calculate variance for standard deviation
-                double sumSquaredDiff = 0;
-                foreach (PriceVolumePoint point in sessionData)
-                {
-                    double diff = point.TypicalPrice - VWAP;
-                    sumSquaredDiff += diff * diff * point.Volume;
-                }
-
-                double variance = sumSquaredDiff / sumVolume;
                 double stdDev = Math.Sqrt(variance);
+                double upper2Sigma = vwap + (stdDev * 2.0);
+                double lower2Sigma = vwap - (stdDev * 2.0);
 
-                // VWAP Standard Deviation Bands (2σ) - Absolute Prices
-                UpperStdDev = VWAP + (STD_DEV_MULTIPLIER * stdDev);
-                LowerStdDev = VWAP - (STD_DEV_MULTIPLIER * stdDev);
+                SetValue(upper2Sigma, LINE_UPPER_STDDEV);
+                SetValue(lower2Sigma, LINE_LOWER_STDDEV);
+            }
+            else
+            {
+                SetValue(double.NaN, LINE_UPPER_STDDEV);
+                SetValue(double.NaN, LINE_LOWER_STDDEV);
+            }
 
-                // Calculate MPD using the formula: MPD = (period high - period low) / 2
-                MPD = (periodHigh - periodLow) / 2.0;
+            if (ShowMPDBands && barCount > 1 && sessionHigh > sessionLow)
+            {
+                double mpd = (sessionHigh - sessionLow) / 2.0;
+                double upperMPD = vwap + mpd;
+                double lowerMPD = vwap - mpd;
 
-                // VWAP MPD Bands - Absolute Prices
-                UpperMPD = VWAP + MPD;
-                LowerMPD = VWAP - MPD;
-
-                // Calculate percentage deviations
-                if (VWAP > 0)
-                {
-                    StdDevPercent = stdDev / VWAP * 100 * STD_DEV_MULTIPLIER;
-                    MPDPercent = MPD / VWAP * 100;
-                }
+                SetValue(upperMPD, LINE_UPPER_MPD);
+                SetValue(lowerMPD, LINE_LOWER_MPD);
+            }
+            else
+            {
+                SetValue(double.NaN, LINE_UPPER_MPD);
+                SetValue(double.NaN, LINE_LOWER_MPD);
             }
         }
 
-        /// <summary>
-        /// Reset all calculated values
-        /// </summary>
-        public void Reset()
+        protected override void OnClear()
         {
-            VWAP = 0;
-            UpperStdDev = 0;
-            LowerStdDev = 0;
-            UpperMPD = 0;
-            LowerMPD = 0;
-            StdDevPercent = 0;
-            MPDPercent = 0;
-            MPD = 0;
+            cumulativePriceVolume = 0.0;
+            cumulativeVolume = 0.0;
+            cumulativePriceSquaredVolume = 0.0;
+            barCount = 0;
+            sessionHigh = double.MinValue;
+            sessionLow = double.MaxValue;
         }
 
         #endregion
 
         #region Helper Methods
 
-        /// <summary>
-        /// Check if price is above VWAP
-        /// </summary>
-        public bool IsPriceAboveVWAP(double price)
+        private void SetValueToAllLines(double value)
         {
-            return VWAP > 0 && price > VWAP;
+            for (int i = 0; i < 5; i++)
+            {
+                SetValue(value, i);
+            }
         }
 
-        /// <summary>
-        /// Get distance from VWAP in percentage
-        /// </summary>
-        public double GetDistanceFromVWAP(double price)
+        #endregion
+
+        #region Public Methods
+
+        public double GetVWAP(int offset = 0)
         {
-            return VWAP == 0 ? 0 : (price - VWAP) / VWAP * 100;
+            return GetValue(offset, LINE_VWAP);
         }
 
-        /// <summary>
-        /// Determine which band the price is in
-        /// </summary>
-        public string GetBandPosition(double price)
+        public double GetUpperStdDev(int offset = 0)
         {
-            return price >= UpperMPD
-                ? "ABOVE MPD (Extreme Overbought)"
-                : price >= UpperStdDev
-                    ? "Between 2σ and MPD (Strong Overbought)"
-                    : price > VWAP
-                                    ? "Between VWAP and 2σ Upper (Above VWAP)"
-                                    : price == VWAP
-                                                    ? "AT VWAP (Equilibrium)"
-                                                    : price > LowerStdDev
-                                                                    ? "Between VWAP and 2σ Lower (Below VWAP)"
-                                                                    : price > LowerMPD ? "Between 2σ and MPD (Strong Oversold)" : "BELOW MPD (Extreme Oversold)";
+            return GetValue(offset, LINE_UPPER_STDDEV);
+        }
+
+        public double GetLowerStdDev(int offset = 0)
+        {
+            return GetValue(offset, LINE_LOWER_STDDEV);
+        }
+
+        public double GetUpperMPD(int offset = 0)
+        {
+            return GetValue(offset, LINE_UPPER_MPD);
+        }
+
+        public double GetLowerMPD(int offset = 0)
+        {
+            return GetValue(offset, LINE_LOWER_MPD);
         }
 
         #endregion

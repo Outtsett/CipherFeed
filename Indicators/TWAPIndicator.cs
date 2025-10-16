@@ -1,122 +1,152 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+﻿using System;
+using System.Drawing;
+using TradingPlatform.BusinessLayer;
 
 namespace CipherFeed.Indicators
 {
-    /// <summary>
-    /// TWAP (Time-Weighted Average Price) Indicator
-    /// Calculates TWAP and deviation bands
-    /// </summary>
-    public class TWAPIndicator
+    public class TWAPIndicator : Indicator
     {
-        #region Constants
+        #region Input Parameters
 
-        // TWAP band deviation multiplier
-        private const double BAND_MULTIPLIER = 1.5;
+        [InputParameter("Use Typical Price", 0)]
+        public bool UseTypicalPrice { get; set; } = true;
 
-        #endregion
-
-        #region Properties
-
-        /// <summary>
-        /// Time-Weighted Average Price
-        /// </summary>
-        public double TWAP { get; private set; }
-
-        /// <summary>
-        /// Upper 1.5? band
-        /// </summary>
-        public double UpperBand { get; private set; }
-
-        /// <summary>
-        /// Lower 1.5? band
-        /// </summary>
-        public double LowerBand { get; private set; }
-
-        /// <summary>
-        /// Band deviation as percentage
-        /// </summary>
-        public double BandPercent { get; private set; }
+        [InputParameter("Show Standard Deviation Bands", 1)]
+        public bool ShowStdDevBands { get; set; } = true;
 
         #endregion
 
-        #region Calculation
+        #region Private Fields
 
-        /// <summary>
-        /// Calculate TWAP and bands from price-time data
-        /// </summary>
-        /// <param name="priceTimePoints">List of price-time data points</param>
-        public void Calculate(List<PriceTimePoint> priceTimePoints)
+        private double cumulativePrice;
+        private double cumulativePriceSquared;
+        private int barCount;
+
+        private const int LINE_TWAP = 0;
+        private const int LINE_UPPER_STDDEV = 1;
+        private const int LINE_LOWER_STDDEV = 2;
+
+        #endregion
+
+        #region Constructor
+
+        public TWAPIndicator()
         {
-            if (priceTimePoints == null || priceTimePoints.Count == 0)
+            Name = "TWAP Indicator";
+            Description = "Time-Weighted Average Price with 2σ Std Dev bands";
+            SeparateWindow = false;
+
+            AddLineSeries("TWAP", Color.Purple, 2, LineStyle.Solid);
+            AddLineSeries("Upper Std Dev 2σ", Color.Magenta, 1, LineStyle.Solid);
+            AddLineSeries("Lower Std Dev 2σ", Color.Magenta, 1, LineStyle.Solid);
+        }
+
+        #endregion
+
+        #region Lifecycle Methods
+
+        protected override void OnInit()
+        {
+            cumulativePrice = 0.0;
+            cumulativePriceSquared = 0.0;
+            barCount = 0;
+        }
+
+        protected override void OnUpdate(UpdateArgs args)
+        {
+            if (Count < 1)
+                return;
+
+            double high = High();
+            double low = Low();
+
+            if (double.IsNaN(high) || double.IsNaN(low))
             {
+                SetValueToAllLines(double.NaN);
                 return;
             }
 
-            // Calculate TWAP: Simple average of prices over time
-            double sumPrices = priceTimePoints.Sum(p => p.Price);
-            TWAP = sumPrices / priceTimePoints.Count;
-
-            // Calculate standard deviation for TWAP bands
-            double sumSquaredDiff = 0;
-            foreach (PriceTimePoint point in priceTimePoints)
+            double price;
+            if (UseTypicalPrice)
             {
-                double diff = point.Price - TWAP;
-                sumSquaredDiff += diff * diff;
+                double close = Close();
+                price = (high + low + close) / 3.0;
+            }
+            else
+            {
+                price = Close();
             }
 
-            double variance = sumSquaredDiff / priceTimePoints.Count;
-            double stdDev = Math.Sqrt(variance);
-
-            // TWAP Bands - Absolute Prices
-            UpperBand = TWAP + (BAND_MULTIPLIER * stdDev);
-            LowerBand = TWAP - (BAND_MULTIPLIER * stdDev);
-
-            // Calculate percentage deviation
-            if (TWAP > 0)
+            if (double.IsNaN(price) || price <= 0)
             {
-                BandPercent = stdDev / TWAP * 100 * BAND_MULTIPLIER;
+                SetValueToAllLines(double.NaN);
+                return;
+            }
+
+            cumulativePrice += price;
+            cumulativePriceSquared += price * price;
+            barCount++;
+
+            double twap = cumulativePrice / barCount;
+            SetValue(twap, LINE_TWAP);
+
+            if (ShowStdDevBands && barCount > 1)
+            {
+                double variance = (cumulativePriceSquared / barCount) - (twap * twap);
+
+                if (variance < 0)
+                    variance = 0;
+
+                double stdDev = Math.Sqrt(variance);
+                double upper2Sigma = twap + (stdDev * 2.0);
+                double lower2Sigma = twap - (stdDev * 2.0);
+
+                SetValue(upper2Sigma, LINE_UPPER_STDDEV);
+                SetValue(lower2Sigma, LINE_LOWER_STDDEV);
+            }
+            else
+            {
+                SetValue(double.NaN, LINE_UPPER_STDDEV);
+                SetValue(double.NaN, LINE_LOWER_STDDEV);
             }
         }
 
-        /// <summary>
-        /// Reset all calculated values
-        /// </summary>
-        public void Reset()
+        protected override void OnClear()
         {
-            TWAP = 0;
-            UpperBand = 0;
-            LowerBand = 0;
-            BandPercent = 0;
+            cumulativePrice = 0.0;
+            cumulativePriceSquared = 0.0;
+            barCount = 0;
         }
 
         #endregion
 
         #region Helper Methods
 
-        /// <summary>
-        /// Check if price is above TWAP
-        /// </summary>
-        public bool IsPriceAboveTWAP(double price)
+        private void SetValueToAllLines(double value)
         {
-            return TWAP > 0 && price > TWAP;
+            for (int i = 0; i < 3; i++)
+            {
+                SetValue(value, i);
+            }
         }
 
-        /// <summary>
-        /// Get distance from TWAP in percentage
-        /// </summary>
-        public double GetDistanceFromTWAP(double price)
+        #endregion
+
+        #region Public Methods
+
+        public double GetTWAP(int offset = 0)
         {
-            return TWAP == 0 ? 0 : (price - TWAP) / TWAP * 100;
+            return GetValue(offset, LINE_TWAP);
         }
 
-        /// <summary>
-        /// Check if price is within TWAP bands
-        /// </summary>
-        public bool IsPriceWithinBands(double price)
+        public double GetUpperStdDev(int offset = 0)
         {
-            return price >= LowerBand && price <= UpperBand;
+            return GetValue(offset, LINE_UPPER_STDDEV);
+        }
+
+        public double GetLowerStdDev(int offset = 0)
+        {
+            return GetValue(offset, LINE_LOWER_STDDEV);
         }
 
         #endregion

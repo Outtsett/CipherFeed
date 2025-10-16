@@ -106,12 +106,9 @@ namespace CipherFeed.PatternDetection
         {
             const double tolerance = 0.005; // 0.5%
 
-            if (keyLevels == null)
-            {
-                return "None";
-            }
-
-            return Math.Abs(price - keyLevels.VWAP) / keyLevels.VWAP < tolerance
+            return keyLevels == null
+                ? "None"
+                : Math.Abs(price - keyLevels.VWAP) / keyLevels.VWAP < tolerance
                 ? "VWAP"
                 : Math.Abs(price - keyLevels.VPOC) / keyLevels.VPOC < tolerance
                 ? "VPOC"
