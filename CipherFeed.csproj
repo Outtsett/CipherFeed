@@ -10,7 +10,7 @@
     <RootNamespace>CipherFeed</RootNamespace>
     <StartAction>Program</StartAction>
     <StartProgram>C:\AMP Quantower\TradingPlatform\v1.143.5\Console.StarterNew.exe</StartProgram>
-    <StartArguments>--address 127.0.0.1 --port 63439</StartArguments>
+    <StartArguments>--address 127.0.0.1 --port 61719</StartArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <OutputPath>C:\AMP Quantower\TradingPlatform\v1.143.5\..\..\Settings\Scripts\Strategies\CipherFeed</OutputPath>
@@ -34,6 +34,80 @@
     <None Remove="IMPLEMENTATION_RESEARCH.md" />
     <None Remove="INDICATOR_IMPLEMENTATION_SUMMARY.md" />
     <None Remove="MICROSTRUCTURE_PATTERN_LEVEL2_MAPPING.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Account.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Asset.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Exchange.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Order.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Position.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Symbol.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\SymbolGroup.md" />
+    <None Include=".claude\quantower-api\Core\BusinessObjects\Trade.md" />
+    <None Include=".claude\quantower-api\Core\Connections\Connection.md" />
+    <None Include=".claude\quantower-api\Core\Connections\ConnectionInfo.md" />
+    <None Include=".claude\quantower-api\Core\Core.md" />
+    <None Include=".claude\quantower-api\Core\Depth of Market\AggregateMethod.md" />
+    <None Include=".claude\quantower-api\Core\Depth of Market\DepthOfMarket.md" />
+    <None Include=".claude\quantower-api\Core\Depth of Market\DepthOfMarketAggregatedCollections.md" />
+    <None Include=".claude\quantower-api\Core\Depth of Market\GetDepthOfMarketParameters.md" />
+    <None Include=".claude\quantower-api\Core\Depth of Market\GetLevel2ItemsParameters.md" />
+    <None Include=".claude\quantower-api\Core\Depth of Market\Level2Item.md" />
+    <None Include=".claude\quantower-api\Core\History\BasePeriod.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoricalData.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryAggregation.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryAggregationPointsAndFigures.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryAggregationRangeBars.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryAggregationRenko.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryAggregationTick.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryAggregationTime.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryItemBar.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryItemLast.md" />
+    <None Include=".claude\quantower-api\Core\History\HistoryItemTick.md" />
+    <None Include=".claude\quantower-api\Core\History\Period.md" />
+    <None Include=".claude\quantower-api\Core\History\RenkoStyle.md" />
+    <None Include=".claude\quantower-api\Core\Misc\PriceType.md" />
+    <None Include=".claude\quantower-api\Core\Quotes\DayBar.md" />
+    <None Include=".claude\quantower-api\Core\Quotes\DOMQuote.md" />
+    <None Include=".claude\quantower-api\Core\Quotes\Last.md" />
+    <None Include=".claude\quantower-api\Core\Quotes\Level2Quote.md" />
+    <None Include=".claude\quantower-api\Core\Quotes\Quote.md" />
+    <None Include=".claude\quantower-api\Core\Requests\CancelOrderRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\ClosePositionRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\GetSymbolRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\HistoryRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\ModifyOrderRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\OrderRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\PlaceOrderRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\PnLRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\ReportRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\RequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Requests\TradingRequestParameters.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemAction.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemBoolean.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemColor.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemDouble.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemGroup.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemInteger.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemPeriod.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemSelector.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemSeparatorGroup.md" />
+    <None Include=".claude\quantower-api\Core\Setting Items\SettingItemString.md" />
+    <None Include=".claude\quantower-api\Indicators\Indicator.md" />
+    <None Include=".claude\quantower-api\Indicators\InputParameterAttribute.md" />
+    <None Include=".claude\quantower-api\README.md" />
+    <None Include=".claude\quantower-api\Strategies\Strategy.md" />
+    <None Include=".claude\quantower-api\Strategies\StrategyMetric.md" />
+    <None Include=".claude\quantower-api\Volume analysis\IVolumeAnalysisCalculationProgress.md" />
+    <None Include=".claude\quantower-api\Volume analysis\IVolumeAnalysisCalculationTask.md" />
+    <None Include=".claude\quantower-api\Volume analysis\Misc\VolumeAnalysisCalculationState.md" />
+    <None Include=".claude\quantower-api\Volume analysis\Misc\VolumeAnalysisDataEventArgs.md" />
+    <None Include=".claude\quantower-api\Volume analysis\Misc\VolumeAnalysisField.md" />
+    <None Include=".claude\quantower-api\Volume analysis\Requests\VolumeAnalysisCalculationParameters.md" />
+    <None Include=".claude\quantower-api\Volume analysis\Requests\VolumeAnalysisCalculationRequest.md" />
+    <None Include=".claude\quantower-api\Volume analysis\VolumeAnalysisData.md" />
+    <None Include=".claude\quantower-api\Volume analysis\VolumeAnalysisItem.md" />
+    <None Include=".claude\quantower-api\Volume analysis\VolumeAnalysisManager.md" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="TradingPlatform.BusinessLayer">
