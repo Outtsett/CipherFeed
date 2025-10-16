@@ -24,6 +24,12 @@
     <None Remove=".claude\**" />
   </ItemGroup>
   <ItemGroup>
+    <None Remove="EVENT_HANDLING_RESEARCH.md" />
+    <None Remove="IMPLEMENTATION_RESEARCH.md" />
+    <None Remove="INDICATOR_IMPLEMENTATION_SUMMARY.md" />
+    <None Remove="MICROSTRUCTURE_PATTERN_LEVEL2_MAPPING.md" />
+  </ItemGroup>
+  <ItemGroup>
     <Reference Include="TradingPlatform.BusinessLayer">
       <HintPath>C:\AMP Quantower\TradingPlatform\v1.143.5\bin\TradingPlatform.BusinessLayer.dll</HintPath>
       <Private>False</Private>
