@@ -10,7 +10,7 @@
     <RootNamespace>CipherFeed</RootNamespace>
     <StartAction>Program</StartAction>
     <StartProgram>C:\AMP Quantower\TradingPlatform\v1.143.5\Console.StarterNew.exe</StartProgram>
-    <StartArguments>--address 127.0.0.1 --port 59710</StartArguments>
+    <StartArguments>--address 127.0.0.1 --port 63890</StartArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <OutputPath>C:\AMP Quantower\TradingPlatform\v1.143.5\..\..\Settings\Scripts\Strategies\CipherFeed</OutputPath>
