@@ -1,4 +1,13 @@
+/*
+ * FILE: CSVDataExporter.cs
+ * PURPOSE: Real-time CSV export engine for market data (67 columns per tick)
+ * KEY DEPENDENCIES: Core.TradingSession, Models.MarketDataSnapshot, Indicators.*
+ * LAST MODIFIED: Updated to use proper namespace imports (no duplicated types)
+ */
+
+using CipherFeed.Core;
 using CipherFeed.Indicators;
+using CipherFeed.Models;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -128,7 +137,7 @@ namespace CipherFeed
         }
 
         /// <summary>
-        /// Get CSV header with all 62 feature names
+        /// Get CSV header with all 67 feature names
         /// </summary>
         private string GetCSVHeader()
         {
@@ -212,7 +221,7 @@ namespace CipherFeed
         }
 
         /// <summary>
-        /// Build a CSV row with all 62 features
+        /// Build a CSV row with all 67 features
         /// </summary>
         private string BuildCSVRow(
             DateTime timestamp,

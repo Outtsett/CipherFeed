@@ -1,4 +1,13 @@
-﻿using CipherFeed.Indicators;
+﻿/*
+ * FILE: CipherFeed.cs
+ * PURPOSE: Main strategy orchestrator for 8 CME micro futures with parallel tick processing
+ * KEY DEPENDENCIES: Core.SessionManager, Models.MarketDataSnapshot, Indicators.*
+ * LAST MODIFIED: Refactored to remove duplicated logic - moved to proper class files
+ */
+
+using CipherFeed.Core;
+using CipherFeed.Indicators;
+using CipherFeed.Models;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.Metrics;
@@ -7,105 +16,6 @@ using TradingPlatform.BusinessLayer;
 
 namespace CipherFeed
 {
-    public enum TradingSession
-    {
-        RTH,
-        ETH
-    }
-
-    /// <summary>
-    /// Market data snapshot containing all orderflow features for a single symbol at a point in time
-    /// </summary>
-    public class MarketDataSnapshot
-    {
-        public DateTime Timestamp { get; set; }
-        public string SymbolName { get; set; }
-
-        // Price and Trade Information
-        public double Last { get; set; }
-        public double Size { get; set; }
-        public AggressorFlag Aggressor { get; set; }
-        public TickDirection TickDirection { get; set; }
-
-        // Bid/Ask Information
-        public double BidPrice { get; set; }
-        public double BidSize { get; set; }
-        public TickDirection BidTickDirection { get; set; }
-        public double AskPrice { get; set; }
-        public double AskSize { get; set; }
-        public TickDirection AskTickDirection { get; set; }
-
-        // Volume and Delta
-        public double Volume { get; set; }
-        public long Trades { get; set; }
-        public double Delta { get; set; }
-        public double DeltaPercent { get; set; }
-        public double CumulativeDelta { get; set; }
-
-        // Buy/Sell Volume
-        public double BuyVolume { get; set; }
-        public double BuyVolumePercent { get; set; }
-        public double SellVolume { get; set; }
-        public double SellVolumePercent { get; set; }
-
-        // Buy/Sell Trades
-        public int BuyTrades { get; set; }
-        public int SellTrades { get; set; }
-
-        // Imbalance
-        public double Imbalance { get; set; }
-        public double ImbalancePercent { get; set; }
-
-        // Average Sizes
-        public double AverageSize { get; set; }
-        public double AverageBuySize { get; set; }
-        public double AverageSellSize { get; set; }
-
-        // Max Trade Volume1
-        public double MaxOneTradeVolume { get; set; }
-        public double MaxOneTradeVolumePercent { get; set; }
-
-        // Filtered Volume1
-        public double FilteredVolume { get; set; }
-        public double FilteredVolumePercent { get; set; }
-        public double FilteredBuyVolume { get; set; }
-        public double FilteredBuyVolumePercent { get; set; }
-        public double FilteredSellVolume { get; set; }
-        public double FilteredSellVolumePercent { get; set; }
-
-        // VWAP Bid/Ask
-        public double VWAPBid { get; set; }
-        public double VWAPAsk { get; set; }
-
-        // Cumulative Sizes
-        public double CumulativeSizeBid { get; set; }
-        public double CumulativeSizeAsk { get; set; }
-        public double CumulativeSize { get; set; }
-
-        // Liquidity Changes
-        public double BidsLiquidityChanges { get; set; }
-        public double AsksLiquidityChanges { get; set; }
-        public int BidsNumberOfChanges { get; set; }
-        public int AsksNumberOfChanges { get; set; }
-
-        // Trade Sizes by Side
-        public double LastTradeSize { get; set; }
-        public double BidTradeSize { get; set; }
-        public double AskTradeSize { get; set; }
-
-        // Time Information
-        public DateTime TimeBid { get; set; }
-        public DateTime TimeAsk { get; set; }
-
-        // Session Open (for percentage calculations)
-        public double SessionOpen { get; set; }
-
-        // Indicator Session Opens (for validation/analysis)
-        public double VWAPSessionOpen { get; set; }
-        public double VPOCSessionOpen { get; set; }
-        public double TWAPSessionOpen { get; set; }
-    }
-
     public class CipherFeed : Strategy
     {
         [InputParameter("Account", 1)]
@@ -125,23 +35,15 @@ namespace CipherFeed
 
         private readonly string[] symbolNames = { "MNQ", "MES", "M2K", "MYM", "ENQ", "EP", "RTY", "YM" };
         private readonly Dictionary<string, Symbol> symbols = [];
-        private readonly Dictionary<Symbol, string> symbolToRoot = [];  // Reverse lookup for fast access
+        private readonly Dictionary<Symbol, string> symbolToRoot = [];
         private readonly Dictionary<Symbol, double> sessionOpenPrices = [];
         private readonly Dictionary<Symbol, bool> sessionOpenInitialized = [];
-
-        // Current prices for batch logging
         private readonly Dictionary<Symbol, double> currentPrices = [];
+        
         private DateTime lastLogTime;
 
         // Market data snapshots per symbol
         private readonly Dictionary<Symbol, MarketDataSnapshot> latestSnapshots = [];
-
-        // Cumulative tracking for orderflow features
-        private readonly Dictionary<Symbol, double> cumulativeDelta = [];
-        private readonly Dictionary<Symbol, double> cumulativeBuyVolume = [];
-        private readonly Dictionary<Symbol, double> cumulativeSellVolume = [];
-        private readonly Dictionary<Symbol, double> cumulativeSizeBid = [];
-        private readonly Dictionary<Symbol, double> cumulativeSizeAsk = [];
 
         // Indicators per symbol
         private readonly Dictionary<Symbol, HistoricalData> historicalDataCache = [];
@@ -149,24 +51,21 @@ namespace CipherFeed
         private readonly Dictionary<Symbol, VPOCIndicator> vpocIndicators = [];
         private readonly Dictionary<Symbol, TWAPIndicator> twapIndicators = [];
 
-        // CSV Data Exporter
+        // Core managers
+        private SessionManager sessionManager;
         private CSVDataExporter csvExporter;
-
-        // Session times: PST to UTC conversion (PST + 8 hours = UTC)
-        // RTH: 4:00 AM - 1:45 PM PST = 12:00 - 21:45 UTC
-        // ETH: 3:15 PM - 4:00 AM PST = 23:15 UTC - 12:00 UTC (next day)
-        private static readonly TimeSpan RTH_START = new(12, 0, 0);   // 12:00 UTC (4am PST)
-        private static readonly TimeSpan RTH_END = new(21, 45, 0);    // 21:45 UTC (1:45pm PST)
-        private static readonly TimeSpan ETH_START = new(23, 15, 0);  // 23:15 UTC (3:15pm PST)
-        private static readonly TimeSpan ETH_END = new(12, 0, 0);     // 12:00 UTC (4am PST next day)
-
-        private TradingSession currentSession;
-        private DateTime sessionStartTime;
-        private DateTime lastCheckTime;
 
         public CipherFeed()
         {
             Name = "CipherFeed";
+        }
+
+        protected override void OnCreated()
+        {
+            base.OnCreated();
+            
+            // Initialize session manager (created once, not on restarts)
+            sessionManager = new SessionManager();
         }
 
         protected override void OnInitializeMetrics(Meter meter)
@@ -194,17 +93,19 @@ namespace CipherFeed
                 return;
             }
 
-            DateTime now = Core.Instance.TimeUtils.DateTimeUtcNow;
-            currentSession = GetSession(now);
-            sessionStartTime = GetSessionStart(now, currentSession);
-            lastCheckTime = now;
+            DateTime now = TradingPlatform.BusinessLayer.Core.Instance.TimeUtils.DateTimeUtcNow;
+            
+            // Initialize session manager
+            sessionManager.Initialize(now);
+            sessionManager.SessionChanged += OnSessionChanged;
+            
             lastLogTime = now;
 
-            Log($"Current session: {currentSession} | Start: {sessionStartTime:yyyy-MM-dd HH:mm} UTC", StrategyLoggingLevel.Trading);
+            Log($"Current session: {sessionManager.CurrentSession} | Start: {sessionManager.SessionStartTime:yyyy-MM-dd HH:mm} UTC", StrategyLoggingLevel.Trading);
 
             foreach (string symbolRoot in symbolNames)
             {
-                List<Symbol> candidates = Core.Instance.Symbols
+                List<Symbol> candidates = TradingPlatform.BusinessLayer.Core.Instance.Symbols
                     .Where(s => s.ConnectionId == CurrentAccount.ConnectionId &&
                                s.Name.StartsWith(symbolRoot) &&
                                s.SymbolType == SymbolType.Futures &&
@@ -220,7 +121,7 @@ namespace CipherFeed
 
                 Symbol symbol = candidates.First();
                 symbols[symbolRoot] = symbol;
-                symbolToRoot[symbol] = symbolRoot;  // Store reverse mapping
+                symbolToRoot[symbol] = symbolRoot;
 
                 // Create dedicated event handler for this symbol using lambda closure
                 symbol.NewLast += (s, last) => OnNewLast_ForSymbol(symbolRoot, s, last);
@@ -228,13 +129,6 @@ namespace CipherFeed
 
                 sessionOpenInitialized[symbol] = false;
                 currentPrices[symbol] = 0.0;
-
-                // Initialize cumulative tracking
-                cumulativeDelta[symbol] = 0.0;
-                cumulativeBuyVolume[symbol] = 0.0;
-                cumulativeSellVolume[symbol] = 0.0;
-                cumulativeSizeBid[symbol] = 0.0;
-                cumulativeSizeAsk[symbol] = 0.0;
 
                 // Try to get session open from historical data
                 InitializeSessionOpen(symbol);
@@ -260,7 +154,7 @@ namespace CipherFeed
             {
                 try
                 {
-                    csvExporter = new CSVDataExporter(CSVLogDirectory, currentSession, sessionStartTime);
+                    csvExporter = new CSVDataExporter(CSVLogDirectory, sessionManager.CurrentSession, sessionManager.SessionStartTime);
 
                     // Initialize CSV files for all symbols
                     foreach (string symbolRoot in symbolNames)
@@ -282,12 +176,11 @@ namespace CipherFeed
         {
             try
             {
-                // Create historical data for indicators (1-minute bars from session start)
                 HistoryRequestParameters historyParams = new()
                 {
                     Symbol = symbol,
-                    FromTime = sessionStartTime,
-                    ToTime = Core.Instance.TimeUtils.DateTimeUtcNow,
+                    FromTime = sessionManager.SessionStartTime,
+                    ToTime = TradingPlatform.BusinessLayer.Core.Instance.TimeUtils.DateTimeUtcNow,
                     Aggregation = new HistoryAggregationTime(Period.MIN1, symbol.HistoryType)
                 };
 
@@ -297,7 +190,6 @@ namespace CipherFeed
                 {
                     historicalDataCache[symbol] = historicalData;
 
-                    // Initialize VWAP indicator
                     SessionAnchoredVWAP vwap = new()
                     {
                         UseTypicalPrice = true,
@@ -307,12 +199,10 @@ namespace CipherFeed
                     historicalData.AddIndicator(vwap);
                     vwapIndicators[symbol] = vwap;
 
-                    // Initialize VPOC indicator
                     VPOCIndicator vpoc = new();
                     historicalData.AddIndicator(vpoc);
                     vpocIndicators[symbol] = vpoc;
 
-                    // Initialize TWAP indicator
                     TWAPIndicator twap = new()
                     {
                         UseTypicalPrice = true,
@@ -321,16 +211,16 @@ namespace CipherFeed
                     historicalData.AddIndicator(twap);
                     twapIndicators[symbol] = twap;
 
-                    Log($"[{currentSession}] {symbol.Name} indicators initialized with {historicalData.Count} bars", StrategyLoggingLevel.Trading);
+                    Log($"[{sessionManager.CurrentSession}] {symbol.Name} indicators initialized with {historicalData.Count} bars", StrategyLoggingLevel.Trading);
                 }
                 else
                 {
-                    Log($"[{currentSession}] {symbol.Name} - Failed to get historical data for indicators", StrategyLoggingLevel.Error);
+                    Log($"[{sessionManager.CurrentSession}] {symbol.Name} - Failed to get historical data for indicators", StrategyLoggingLevel.Error);
                 }
             }
             catch (Exception ex)
             {
-                Log($"[{currentSession}] {symbol.Name} - Error initializing indicators: {ex.Message}", StrategyLoggingLevel.Error);
+                Log($"[{sessionManager.CurrentSession}] {symbol.Name} - Error initializing indicators: {ex.Message}", StrategyLoggingLevel.Error);
             }
         }
 
@@ -338,12 +228,11 @@ namespace CipherFeed
         {
             try
             {
-                // Request historical data around session start time
                 HistoryRequestParameters historyParams = new()
                 {
                     Symbol = symbol,
-                    FromTime = sessionStartTime.AddMinutes(-5),
-                    ToTime = sessionStartTime.AddMinutes(5),
+                    FromTime = sessionManager.SessionStartTime.AddMinutes(-5),
+                    ToTime = sessionManager.SessionStartTime.AddMinutes(5),
                     Aggregation = new HistoryAggregationTime(Period.MIN1, symbol.HistoryType)
                 };
 
@@ -351,16 +240,15 @@ namespace CipherFeed
 
                 if (history != null && history.Count > 0)
                 {
-                    // Find the first bar at or after session start
                     IHistoryItem sessionBar = null;
                     double closestTimeDiff = double.MaxValue;
 
                     for (int i = 0; i < history.Count; i++)
                     {
                         IHistoryItem bar = history[i, SeekOriginHistory.Begin];
-                        if (bar is HistoryItemBar barItem && barItem.TimeLeft >= sessionStartTime)
+                        if (bar is HistoryItemBar barItem && barItem.TimeLeft >= sessionManager.SessionStartTime)
                         {
-                            double timeDiff = (barItem.TimeLeft - sessionStartTime).TotalSeconds;
+                            double timeDiff = (barItem.TimeLeft - sessionManager.SessionStartTime).TotalSeconds;
 
                             if (timeDiff < closestTimeDiff)
                             {
@@ -374,22 +262,19 @@ namespace CipherFeed
                     {
                         sessionOpenPrices[symbol] = sessionBarItem.Open;
                         sessionOpenInitialized[symbol] = true;
-                        Log($"[{currentSession}] {symbol.Name} session open from history: {sessionBarItem.Open:F2} (bar time: {sessionBarItem.TimeLeft:yyyy-MM-dd HH:mm})", StrategyLoggingLevel.Trading);
+                        Log($"[{sessionManager.CurrentSession}] {symbol.Name} session open from history: {sessionBarItem.Open:F2} (bar time: {sessionBarItem.TimeLeft:yyyy-MM-dd HH:mm})", StrategyLoggingLevel.Trading);
                         return;
                     }
                 }
 
-                Log($"[{currentSession}] {symbol.Name} - No historical data found, will use first tick", StrategyLoggingLevel.Trading);
+                Log($"[{sessionManager.CurrentSession}] {symbol.Name} - No historical data found, will use first tick", StrategyLoggingLevel.Trading);
             }
             catch (Exception ex)
             {
-                Log($"[{currentSession}] {symbol.Name} - Error getting historical data: {ex.Message}, will use first tick", StrategyLoggingLevel.Error);
+                Log($"[{sessionManager.CurrentSession}] {symbol.Name} - Error getting historical data: {ex.Message}, will use first tick", StrategyLoggingLevel.Error);
             }
         }
 
-        /// <summary>
-        /// Dedicated event handler for NewLast - each symbol gets its own closure
-        /// </summary>
         private void OnNewLast_ForSymbol(string symbolRoot, Symbol symbol, Last last)
         {
             if (symbol == null || last == null)
@@ -397,7 +282,8 @@ namespace CipherFeed
                 return;
             }
 
-            CheckSessionBoundary(last.Time);
+            // Check session boundary using SessionManager
+            sessionManager.CheckBoundary(last.Time);
 
             // If session open hasn't been initialized yet, use this tick
             if (!sessionOpenInitialized.ContainsKey(symbol) || !sessionOpenInitialized[symbol])
@@ -406,24 +292,47 @@ namespace CipherFeed
                 {
                     sessionOpenPrices[symbol] = last.Price;
                     sessionOpenInitialized[symbol] = true;
-                    Log($"[{currentSession}] {symbol.Name} session open from first tick: {last.Price:F2} (tick time: {last.Time:yyyy-MM-dd HH:mm:ss})", StrategyLoggingLevel.Trading);
+                    Log($"[{sessionManager.CurrentSession}] {symbol.Name} session open from first tick: {last.Price:F2} (tick time: {last.Time:yyyy-MM-dd HH:mm:ss})", StrategyLoggingLevel.Trading);
                 }
                 return;
             }
 
-            // Update current price
             currentPrices[symbol] = last.Price;
 
-            // Update market data snapshot with trade information
-            UpdateSnapshotFromLast(symbol, last);
+            // Get or create snapshot
+            if (!latestSnapshots.ContainsKey(symbol))
+            {
+                latestSnapshots[symbol] = new MarketDataSnapshot
+                {
+                    SymbolName = symbol.Name,
+                    SessionOpen = sessionOpenPrices.ContainsKey(symbol) ? sessionOpenPrices[symbol] : 0.0
+                };
+            }
 
-            // Write to CSV immediately on every tick if enabled (non-blocking with symbolRoot available)
+            // Update snapshot using its own UpdateFromLast method
+            latestSnapshots[symbol].UpdateFromLast(symbol, last);
+
+            // Update indicator session opens
+            if (vwapIndicators.ContainsKey(symbol))
+            {
+                latestSnapshots[symbol].VWAPSessionOpen = vwapIndicators[symbol].GetSessionOpen();
+            }
+            if (vpocIndicators.ContainsKey(symbol))
+            {
+                latestSnapshots[symbol].VPOCSessionOpen = vpocIndicators[symbol].GetSessionOpen();
+            }
+            if (twapIndicators.ContainsKey(symbol))
+            {
+                latestSnapshots[symbol].TWAPSessionOpen = twapIndicators[symbol].GetSessionOpen();
+            }
+
+            // Write to CSV immediately on every tick if enabled
             if (EnableCSVLogging && csvExporter != null && latestSnapshots.ContainsKey(symbol))
             {
                 try
                 {
                     csvExporter.WriteSnapshot(
-                        symbolRoot,  // Already available from closure - no lookup needed!
+                        symbolRoot,
                         symbol,
                         latestSnapshots[symbol],
                         sessionOpenPrices.ContainsKey(symbol) ? sessionOpenPrices[symbol] : 0.0,
@@ -445,9 +354,6 @@ namespace CipherFeed
             }
         }
 
-        /// <summary>
-        /// Dedicated event handler for NewQuote - each symbol gets its own closure
-        /// </summary>
         private void OnNewQuote_ForSymbol(string symbolRoot, Symbol symbol, Quote quote)
         {
             if (symbol == null || quote == null)
@@ -455,12 +361,7 @@ namespace CipherFeed
                 return;
             }
 
-            // Update market data snapshot with bid/ask information
-            UpdateSnapshotFromQuote(symbol, quote);
-        }
-
-        private void UpdateSnapshotFromLast(Symbol symbol, Last last)
-        {
+            // Get or create snapshot
             if (!latestSnapshots.ContainsKey(symbol))
             {
                 latestSnapshots[symbol] = new MarketDataSnapshot
@@ -470,139 +371,85 @@ namespace CipherFeed
                 };
             }
 
-            MarketDataSnapshot snapshot = latestSnapshots[symbol];
-            snapshot.Timestamp = last.Time;
-            snapshot.Last = last.Price;
-            snapshot.Size = last.Size;
-            snapshot.Aggressor = last.AggressorFlag;
-            snapshot.TickDirection = last.TickDirection;
-
-            // Update volume and trade data from Symbol properties
-            snapshot.Volume = symbol.Volume;
-            snapshot.Trades = symbol.Trades;
-            snapshot.Delta = symbol.Delta;
-
-            // Calculate buy/sell volumes based on aggressor
-            double tradeDelta = 0;
-            if (last.AggressorFlag == AggressorFlag.Buy)
-            {
-                tradeDelta = last.Size;
-                cumulativeBuyVolume[symbol] += last.Size;
-            }
-            else if (last.AggressorFlag == AggressorFlag.Sell)
-            {
-                tradeDelta = -last.Size;
-                cumulativeSellVolume[symbol] += last.Size;
-            }
-
-            // Update cumulative delta
-            cumulativeDelta[symbol] += tradeDelta;
-            snapshot.CumulativeDelta = cumulativeDelta[symbol];
-
-            snapshot.BuyVolume = cumulativeBuyVolume[symbol];
-            snapshot.SellVolume = cumulativeSellVolume[symbol];
-
-            // Calculate percentages
-            double totalVolume = snapshot.BuyVolume + snapshot.SellVolume;
-            if (totalVolume > 0)
-            {
-                snapshot.BuyVolumePercent = snapshot.BuyVolume / totalVolume * 100;
-                snapshot.SellVolumePercent = snapshot.SellVolume / totalVolume * 100;
-            }
-
-            // Calculate imbalance
-            snapshot.Imbalance = snapshot.BuyVolume - snapshot.SellVolume;
-            if (totalVolume > 0)
-            {
-                snapshot.ImbalancePercent = snapshot.Imbalance / totalVolume * 100;
-                snapshot.DeltaPercent = snapshot.Delta / totalVolume * 100;
-            }
-
-            // Track liquidity changes
-            if (last.TickDirection == TickDirection.Up)
-            {
-                snapshot.BidsLiquidityChanges = last.Size;
-                snapshot.AsksLiquidityChanges = 0;
-            }
-            else if (last.TickDirection == TickDirection.Down)
-            {
-                snapshot.BidsLiquidityChanges = 0;
-                snapshot.AsksLiquidityChanges = last.Size;
-            }
-
-            // Count number of changes
-            snapshot.BidsNumberOfChanges++;
-            snapshot.AsksNumberOfChanges++;
-
-            // Update last trade size
-            snapshot.LastTradeSize = last.Size;
-
-            // Update bid/ask trade sizes based on aggressor
-            if (last.AggressorFlag == AggressorFlag.Buy)
-            {
-                snapshot.BidTradeSize = last.Size;
-                snapshot.AskTradeSize = 0;
-            }
-            else if (last.AggressorFlag == AggressorFlag.Sell)
-            {
-                snapshot.BidTradeSize = 0;
-                snapshot.AskTradeSize = last.Size;
-            }
-
-            // Update indicator session opens
-            if (vwapIndicators.ContainsKey(symbol))
-            {
-                snapshot.VWAPSessionOpen = vwapIndicators[symbol].GetSessionOpen();
-            }
-
-            if (vpocIndicators.ContainsKey(symbol))
-            {
-                snapshot.VPOCSessionOpen = vpocIndicators[symbol].GetSessionOpen();
-            }
-
-            if (twapIndicators.ContainsKey(symbol))
-            {
-                snapshot.TWAPSessionOpen = twapIndicators[symbol].GetSessionOpen();
-            }
+            // Update snapshot using its own UpdateFromQuote method
+            latestSnapshots[symbol].UpdateFromQuote(quote);
         }
 
-        private void UpdateSnapshotFromQuote(Symbol symbol, Quote quote)
+        private void OnSessionChanged(TradingSession oldSession, TradingSession newSession, DateTime newSessionStart)
         {
-            if (!latestSnapshots.ContainsKey(symbol))
+            Log($"\n🔔 SESSION CHANGE: {oldSession} → {newSession} | Start: {newSessionStart:yyyy-MM-dd HH:mm} UTC\n", StrategyLoggingLevel.Trading);
+
+            sessionOpenPrices.Clear();
+            sessionOpenInitialized.Clear();
+            currentPrices.Clear();
+
+            // Reset all snapshots' cumulative state
+            foreach (MarketDataSnapshot snapshot in latestSnapshots.Values)
             {
-                latestSnapshots[symbol] = new MarketDataSnapshot
+                snapshot.ResetCumulativeState();
+            }
+            latestSnapshots.Clear();
+
+            lastLogTime = newSessionStart;
+
+            // Re-initialize CSV exporter for new session
+            if (EnableCSVLogging)
+            {
+                try
                 {
-                    SymbolName = symbol.Name,
-                    SessionOpen = sessionOpenPrices.ContainsKey(symbol) ? sessionOpenPrices[symbol] : 0.0
-                };
+                    csvExporter = new CSVDataExporter(CSVLogDirectory, newSession, newSessionStart);
+
+                    foreach (string symbolRoot in symbolNames)
+                    {
+                        csvExporter.InitializeSymbolFile(symbolRoot);
+                    }
+
+                    Log($"CSV logging reinitialized for new session - {symbolNames.Length} files created", StrategyLoggingLevel.Trading);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to reinitialize CSV exporter: {ex.Message}", StrategyLoggingLevel.Error);
+                    csvExporter = null;
+                }
             }
 
-            MarketDataSnapshot snapshot = latestSnapshots[symbol];
-            snapshot.Timestamp = quote.Time;
-            snapshot.BidPrice = quote.Bid;
-            snapshot.BidSize = quote.BidSize;
-            snapshot.BidTickDirection = quote.BidTickDirection;
-            snapshot.AskPrice = quote.Ask;
-            snapshot.AskSize = quote.AskSize;
-            snapshot.AskTickDirection = quote.AskTickDirection;
-            snapshot.TimeBid = quote.Time;
-            snapshot.TimeAsk = quote.Time;
+            // Re-initialize session open and indicators for all symbols
+            foreach (Symbol symbol in symbols.Values)
+            {
+                sessionOpenInitialized[symbol] = false;
+                currentPrices[symbol] = 0.0;
 
-            // Update cumulative bid/ask sizes
-            cumulativeSizeBid[symbol] += quote.BidSize;
-            cumulativeSizeAsk[symbol] += quote.AskSize;
-            snapshot.CumulativeSizeBid = cumulativeSizeBid[symbol];
-            snapshot.CumulativeSizeAsk = cumulativeSizeAsk[symbol];
+                InitializeSessionOpen(symbol);
+
+                // Clean up old indicators
+                if (historicalDataCache.ContainsKey(symbol))
+                {
+                    HistoricalData oldHistory = historicalDataCache[symbol];
+                    if (vwapIndicators.ContainsKey(symbol))
+                    {
+                        oldHistory.RemoveIndicator(vwapIndicators[symbol]);
+                    }
+                    if (vpocIndicators.ContainsKey(symbol))
+                    {
+                        oldHistory.RemoveIndicator(vpocIndicators[symbol]);
+                    }
+                    if (twapIndicators.ContainsKey(symbol))
+                    {
+                        oldHistory.RemoveIndicator(twapIndicators[symbol]);
+                    }
+                }
+
+                // Re-initialize indicators for new session
+                InitializeIndicatorsForSymbol(symbol);
+            }
         }
 
         private void LogAllSymbols(DateTime timestamp)
         {
-            // Log header
             Log($"╔═══════════════════════════════════════════════════════════════════════════════╗", StrategyLoggingLevel.Trading);
-            Log($"║ [{currentSession}] Market Snapshot - {timestamp:HH:mm:ss} UTC                                     ║", StrategyLoggingLevel.Trading);
+            Log($"║ [{sessionManager.CurrentSession}] Market Snapshot - {timestamp:HH:mm:ss} UTC                                     ║", StrategyLoggingLevel.Trading);
             Log($"╚═══════════════════════════════════════════════════════════════════════════════╝", StrategyLoggingLevel.Trading);
 
-            // Sort symbols by name for consistent display
             List<KeyValuePair<string, Symbol>> sortedSymbols = symbols.OrderBy(kvp => kvp.Key).ToList();
 
             foreach (KeyValuePair<string, Symbol> kvp in sortedSymbols)
@@ -628,7 +475,6 @@ namespace CipherFeed
                 string direction = changePercent >= 0 ? "▲" : "▼";
                 string sign = changePercent >= 0 ? "+" : "";
 
-                // Build main price line with better formatting
                 Log($"┌─ {direction} {symbolRoot,-6} ─────────────────────────────────────────────────────────────┐", StrategyLoggingLevel.Trading);
                 Log($"│  Price: {currentPrice,10:F2}  │  Change: {sign}{changePercent,7:F3}% ({sign}{changePoints,8:F2} pts)", StrategyLoggingLevel.Trading);
 
@@ -643,10 +489,9 @@ namespace CipherFeed
 
                     if (!double.IsNaN(vwap))
                     {
-                        // Convert VWAP from percentage back to price
                         double vwapPrice = sessionOpen * (1 + vwap);
                         double vwapDiff = currentPrice - vwapPrice;
-                        double vwapDiffPct = vwap;  // Already in decimal form
+                        double vwapDiffPct = vwap;
                         string vwapPos = vwapDiff >= 0 ? "ABOVE" : "BELOW";
 
                         Log($"│", StrategyLoggingLevel.Trading);
@@ -657,8 +502,8 @@ namespace CipherFeed
                         {
                             double upperPrice = sessionOpen * (1 + vwapUpper);
                             double lowerPrice = sessionOpen * (1 + vwapLower);
-                            double upperPct = vwapUpper;  // Already in decimal form
-                            double lowerPct = vwapLower;  // Already in decimal form
+                            double upperPct = vwapUpper;
+                            double lowerPct = vwapLower;
 
                             Log($"│     ± 2σ Bands:  Upper {upperPrice,10:F2} ({upperPct,+7:F3}%)  │  Lower {lowerPrice,10:F2} ({lowerPct,+7:F3}%)", StrategyLoggingLevel.Trading);
                         }
@@ -667,8 +512,8 @@ namespace CipherFeed
                         {
                             double upperMPDPrice = sessionOpen * (1 + vwapUpperMPD);
                             double lowerMPDPrice = sessionOpen * (1 + vwapLowerMPD);
-                            double upperMPDPct = vwapUpperMPD;  // Already in decimal form
-                            double lowerMPDPct = vwapLowerMPD;  // Already in decimal form
+                            double upperMPDPct = vwapUpperMPD;
+                            double lowerMPDPct = vwapLowerMPD;
 
                             Log($"│     MPD Bands:   Upper {upperMPDPrice,10:F2} ({upperMPDPct,+7:F3}%)  │  Lower {lowerMPDPrice,10:F2} ({lowerMPDPct,+7:F3}%)", StrategyLoggingLevel.Trading);
                         }
@@ -684,9 +529,8 @@ namespace CipherFeed
 
                     if (!double.IsNaN(vpoc))
                     {
-                        // Convert VPOC values from percentage back to price
                         double vpocPrice = sessionOpen * (1 + vpoc);
-                        double vpocPct = vpoc;  // Already in decimal form
+                        double vpocPct = vpoc;
 
                         Log($"│", StrategyLoggingLevel.Trading);
                         Log($"│  📈 Volume Profile:", StrategyLoggingLevel.Trading);
@@ -696,10 +540,9 @@ namespace CipherFeed
                         {
                             double vahPrice = sessionOpen * (1 + vah);
                             double valPrice = sessionOpen * (1 + val);
-                            double vahPct = vah;  // Already in decimal form
-                            double valPct = val;  // Already in decimal form
+                            double vahPct = vah;
+                            double valPct = val;
 
-                            // Determine position relative to value area
                             string vaPosition = currentPrice > vahPrice ? "🔴 ABOVE VALUE AREA" : currentPrice < valPrice ? "🔵 BELOW VALUE AREA" : "🟢 INSIDE VALUE AREA";
                             Log($"│     VAH:         {vahPrice,10:F2} ({vahPct,+7:F3}%)", StrategyLoggingLevel.Trading);
                             Log($"│     VAL:         {valPrice,10:F2} ({valPct,+7:F3}%)", StrategyLoggingLevel.Trading);
@@ -717,10 +560,9 @@ namespace CipherFeed
 
                     if (!double.IsNaN(twap))
                     {
-                        // Convert TWAP from percentage back to price
                         double twapPrice = sessionOpen * (1 + twap);
                         double twapDiff = currentPrice - twapPrice;
-                        double twapDiffPct = twap;  // Already in decimal form
+                        double twapDiffPct = twap;
                         string twapPos = twapDiff >= 0 ? "ABOVE" : "BELOW";
 
                         Log($"│", StrategyLoggingLevel.Trading);
@@ -731,15 +573,14 @@ namespace CipherFeed
                         {
                             double upperPrice = sessionOpen * (1 + twapUpper);
                             double lowerPrice = sessionOpen * (1 + twapLower);
-                            double upperPct = twapUpper;  // Already in decimal form
-                            double lowerPct = twapLower;  // Already in decimal form
+                            double upperPct = twapUpper;
+                            double lowerPct = twapLower;
 
                             Log($"│     ± 2σ Bands:  Upper {upperPrice,10:F2} ({upperPct,+7:F3}%)  │  Lower {lowerPrice,10:F2} ({lowerPct,+7:F3}%)", StrategyLoggingLevel.Trading);
                         }
                     }
                 }
 
-                // Optionally log orderflow features
                 if (LogOrderflowFeatures)
                 {
                     LogOrderflowFeaturesForSymbol(symbol);
@@ -752,25 +593,16 @@ namespace CipherFeed
             Log($"═══════════════════════════════════════════════════════════════════════════════", StrategyLoggingLevel.Trading);
         }
 
-        /// <summary>
-        /// Get the latest market data snapshot for a symbol
-        /// </summary>
         public MarketDataSnapshot GetMarketDataSnapshot(Symbol symbol)
         {
             return latestSnapshots.ContainsKey(symbol) ? latestSnapshots[symbol] : null;
         }
 
-        /// <summary>
-        /// Get the latest market data snapshot for a symbol by root name
-        /// </summary>
         public MarketDataSnapshot GetMarketDataSnapshot(string symbolRoot)
         {
             return symbols.ContainsKey(symbolRoot) ? GetMarketDataSnapshot(symbols[symbolRoot]) : null;
         }
 
-        /// <summary>
-        /// Log orderflow features for a specific symbol
-        /// </summary>
         private void LogOrderflowFeaturesForSymbol(Symbol symbol)
         {
             if (!latestSnapshots.ContainsKey(symbol))
@@ -801,131 +633,17 @@ namespace CipherFeed
             }
         }
 
-        private TradingSession GetSession(DateTime utcTime)
-        {
-            TimeSpan time = utcTime.TimeOfDay;
-
-            return time >= RTH_START && time < RTH_END
-                ? TradingSession.RTH
-                : time >= ETH_START || time < ETH_END ? TradingSession.ETH : TradingSession.RTH;
-        }
-
-        private DateTime GetSessionStart(DateTime utcTime, TradingSession session)
-        {
-            if (session == TradingSession.RTH)
-            {
-                DateTime rthStart = utcTime.Date.Add(RTH_START);
-                return utcTime.TimeOfDay < RTH_START ? rthStart.AddDays(-1) : rthStart;
-            }
-            else
-            {
-                return utcTime.TimeOfDay < ETH_END
-                    ? utcTime.Date.AddDays(-1).Add(ETH_START)
-                    : utcTime.Date.Add(ETH_START);
-            }
-        }
-
-        private void CheckSessionBoundary(DateTime utcTime)
-        {
-            TradingSession newSession = GetSession(utcTime);
-
-            if (newSession != currentSession)
-            {
-                DateTime newSessionStart = GetSessionStart(utcTime, newSession);
-
-                Log($"\n🔔 SESSION CHANGE: {currentSession} → {newSession} | Start: {newSessionStart:yyyy-MM-dd HH:mm} UTC\n", StrategyLoggingLevel.Trading);
-
-                sessionOpenPrices.Clear();
-                sessionOpenInitialized.Clear();
-                currentPrices.Clear();
-                latestSnapshots.Clear();
-
-                // Reset cumulative tracking
-                cumulativeDelta.Clear();
-                cumulativeBuyVolume.Clear();
-                cumulativeSellVolume.Clear();
-                cumulativeSizeBid.Clear();
-                cumulativeSizeAsk.Clear();
-
-                currentSession = newSession;
-                sessionStartTime = newSessionStart;
-                lastLogTime = utcTime;
-
-                // Re-initialize CSV exporter for new session
-                if (EnableCSVLogging)
-                {
-                    try
-                    {
-                        csvExporter = new CSVDataExporter(CSVLogDirectory, newSession, newSessionStart);
-
-                        // Initialize CSV files for all symbols
-                        foreach (string symbolRoot in symbolNames)
-                        {
-                            csvExporter.InitializeSymbolFile(symbolRoot);
-                        }
-
-                        Log($"CSV logging reinitialized for new session - {symbolNames.Length} files created", StrategyLoggingLevel.Trading);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"Failed to reinitialize CSV exporter: {ex.Message}", StrategyLoggingLevel.Error);
-                        csvExporter = null;
-                    }
-                }
-
-                // Re-initialize session open and indicators for all symbols
-                foreach (Symbol symbol in symbols.Values)
-                {
-                    sessionOpenInitialized[symbol] = false;
-                    currentPrices[symbol] = 0.0;
-
-                    // Re-initialize cumulative tracking
-                    cumulativeDelta[symbol] = 0.0;
-                    cumulativeBuyVolume[symbol] = 0.0;
-                    cumulativeSellVolume[symbol] = 0.0;
-                    cumulativeSizeBid[symbol] = 0.0;
-                    cumulativeSizeAsk[symbol] = 0.0;
-
-                    InitializeSessionOpen(symbol);
-
-                    // Clean up old indicators
-                    if (historicalDataCache.ContainsKey(symbol))
-                    {
-                        HistoricalData oldHistory = historicalDataCache[symbol];
-                        if (vwapIndicators.ContainsKey(symbol))
-                        {
-                            oldHistory.RemoveIndicator(vwapIndicators[symbol]);
-                        }
-
-                        if (vpocIndicators.ContainsKey(symbol))
-                        {
-                            oldHistory.RemoveIndicator(vpocIndicators[symbol]);
-                        }
-
-                        if (twapIndicators.ContainsKey(symbol))
-                        {
-                            oldHistory.RemoveIndicator(twapIndicators[symbol]);
-                        }
-                    }
-
-                    // Re-initialize indicators for new session
-                    InitializeIndicatorsForSymbol(symbol);
-                }
-            }
-
-            lastCheckTime = utcTime;
-        }
-
         protected override void OnStop()
         {
-            // Note: Lambda event handlers are automatically cleaned up when symbol is garbage collected
-            // But we should still null out references for good practice
+            // Unsubscribe from session events
+            if (sessionManager != null)
+            {
+                sessionManager.SessionChanged -= OnSessionChanged;
+            }
+
+            // Clean up indicators
             foreach (Symbol symbol in symbols.Values)
             {
-                // No need to manually unsubscribe lambdas - they'll be cleaned up
-                // symbol.NewLast -= (handler);  // Can't reference the lambda directly
-
-                // Clean up indicators
                 if (historicalDataCache.ContainsKey(symbol))
                 {
                     HistoricalData history = historicalDataCache[symbol];
@@ -933,12 +651,10 @@ namespace CipherFeed
                     {
                         history.RemoveIndicator(vwapIndicators[symbol]);
                     }
-
                     if (vpocIndicators.ContainsKey(symbol))
                     {
                         history.RemoveIndicator(vpocIndicators[symbol]);
                     }
-
                     if (twapIndicators.ContainsKey(symbol))
                     {
                         history.RemoveIndicator(twapIndicators[symbol]);
@@ -956,12 +672,8 @@ namespace CipherFeed
             twapIndicators.Clear();
             currentPrices.Clear();
             latestSnapshots.Clear();
-            cumulativeDelta.Clear();
-            cumulativeBuyVolume.Clear();
-            cumulativeSellVolume.Clear();
-            cumulativeSizeBid.Clear();
-            cumulativeSizeAsk.Clear();
 
+            sessionManager = null;
             csvExporter = null;
 
             Log("Stopped", StrategyLoggingLevel.Trading);
