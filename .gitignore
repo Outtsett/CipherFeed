@@ -158,3 +158,4 @@ ServiceFabricBackup/
 
 # Claude settings
 .claude/settings.local.json
+/quantower-api
