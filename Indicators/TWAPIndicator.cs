@@ -53,7 +53,9 @@ namespace CipherFeed.Indicators
         protected override void OnUpdate(UpdateArgs args)
         {
             if (Count < 1)
+            {
                 return;
+            }
 
             double high = High();
             double low = Low();
@@ -81,16 +83,7 @@ namespace CipherFeed.Indicators
                 return;
             }
 
-            double price;
-            if (UseTypicalPrice)
-            {
-                price = (high + low + close) / 3.0;
-            }
-            else
-            {
-                price = close;
-            }
-
+            double price = UseTypicalPrice ? (high + low + close) / 3.0 : close;
             if (double.IsNaN(price) || price <= 0)
             {
                 twap = double.NaN;
@@ -114,7 +107,9 @@ namespace CipherFeed.Indicators
                 double variance = (cumulativePriceSquared / barCount) - (twap * twap);
 
                 if (variance < 0)
+                {
                     variance = 0;
+                }
 
                 double stdDev = Math.Sqrt(variance);
                 upperStdDev = twap + (stdDev * 2.0);

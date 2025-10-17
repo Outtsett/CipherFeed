@@ -65,7 +65,9 @@ namespace CipherFeed.Indicators
         protected override void OnUpdate(UpdateArgs args)
         {
             if (Count < 1)
+            {
                 return;
+            }
 
             double volume = Volume();
 
@@ -100,20 +102,16 @@ namespace CipherFeed.Indicators
             }
 
             if (high > sessionHigh)
+            {
                 sessionHigh = high;
+            }
+
             if (low < sessionLow)
+            {
                 sessionLow = low;
-
-            double price;
-            if (UseTypicalPrice)
-            {
-                price = (high + low + close) / 3.0;
-            }
-            else
-            {
-                price = close;
             }
 
+            double price = UseTypicalPrice ? (high + low + close) / 3.0 : close;
             if (double.IsNaN(price) || price <= 0)
             {
                 vwap = double.NaN;
@@ -141,7 +139,9 @@ namespace CipherFeed.Indicators
                 double variance = (cumulativePriceSquaredVolume / cumulativeVolume) - (vwap * vwap);
 
                 if (variance < 0)
+                {
                     variance = 0;
+                }
 
                 double stdDev = Math.Sqrt(variance);
                 upperStdDev = vwap + (stdDev * 2.0);
@@ -158,7 +158,7 @@ namespace CipherFeed.Indicators
                 // Convert session high/low to percentage space
                 double sessionHighPct = (sessionHigh - sessionOpen) / sessionOpen;
                 double sessionLowPct = (sessionLow - sessionOpen) / sessionOpen;
-                
+
                 double mpd = (sessionHighPct - sessionLowPct) / 2.0;
                 upperMPD = vwap + mpd;
                 lowerMPD = vwap - mpd;

@@ -36,7 +36,7 @@ namespace CipherFeed.Indicators
 
         protected override void OnInit()
         {
-            volumeByPrice = new Dictionary<double, double>();
+            volumeByPrice = [];
             tickSize = Symbol?.TickSize ?? 0.01;
             sessionOpen = 0.0;
             barCount = 0;
@@ -45,7 +45,9 @@ namespace CipherFeed.Indicators
         protected override void OnUpdate(UpdateArgs args)
         {
             if (Count < 1)
+            {
                 return;
+            }
 
             double volume = Volume();
 
@@ -120,7 +122,9 @@ namespace CipherFeed.Indicators
             int numLevels = (int)Math.Round((priceEnd - priceStart) / tickSizePct) + 1;
 
             if (numLevels <= 0)
+            {
                 numLevels = 1;
+            }
 
             double volumePerLevel = volume / numLevels;
 
@@ -129,7 +133,9 @@ namespace CipherFeed.Indicators
                 double roundedPrice = Math.Round(price / tickSizePct) * tickSizePct;
 
                 if (!volumeByPrice.ContainsKey(roundedPrice))
+                {
                     volumeByPrice[roundedPrice] = 0;
+                }
 
                 volumeByPrice[roundedPrice] += volumePerLevel;
             }
@@ -152,12 +158,12 @@ namespace CipherFeed.Indicators
             double totalVolume = volumeByPrice.Values.Sum();
 
             // Sort prices by volume descending
-            var sortedByVolume = volumeByPrice.OrderByDescending(kvp => kvp.Value).ToList();
+            List<KeyValuePair<double, double>> sortedByVolume = volumeByPrice.OrderByDescending(kvp => kvp.Value).ToList();
 
             // Build value area (70% of volume)
             double targetVolume = totalVolume * 0.70;
             double accumulatedVolume = 0;
-            List<double> valueAreaPrices = new List<double>();
+            List<double> valueAreaPrices = [];
 
             foreach (var kvp in sortedByVolume)
             {
@@ -165,7 +171,9 @@ namespace CipherFeed.Indicators
                 accumulatedVolume += kvp.Value;
 
                 if (accumulatedVolume >= targetVolume)
+                {
                     break;
+                }
             }
 
             if (valueAreaPrices.Count > 0)
