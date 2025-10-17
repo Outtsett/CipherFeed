@@ -1,11 +1,4 @@
-/*
- * FILE: CSVDataExporter.cs
- * PURPOSE: Real-time CSV export engine for market data (67 columns per tick)
- * KEY DEPENDENCIES: Core.TradingSession, Models.MarketDataSnapshot, Indicators.*
- * LAST MODIFIED: Updated to use proper namespace imports (no duplicated types)
- */
-
-using CipherFeed.Core;
+﻿using CipherFeed.Core;
 using CipherFeed.Indicators;
 using CipherFeed.Models;
 using System;
@@ -141,8 +134,8 @@ namespace CipherFeed
         /// </summary>
         private string GetCSVHeader()
         {
-            List<string> headers = new()
-            {
+            List<string> headers =
+            [
                 // Metadata (2)
                 "Timestamp",
                 "SymbolName",
@@ -215,7 +208,7 @@ namespace CipherFeed
                 "VWAP_SessionOpen",
                 "VPOC_SessionOpen",
                 "TWAP_SessionOpen"
-            };
+            ];
 
             return string.Join(",", headers);
         }
@@ -232,8 +225,8 @@ namespace CipherFeed
             double vpoc, double vah, double val,
             double twap, double twapUpper, double twapLower)
         {
-            List<string> values = new()
-            {
+            List<string> values =
+            [
                 // Metadata
                 timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"),
                 symbolRoot,
@@ -306,7 +299,7 @@ namespace CipherFeed
                 FormatDouble(snapshot.VWAPSessionOpen),
                 FormatDouble(snapshot.VPOCSessionOpen),
                 FormatDouble(snapshot.TWAPSessionOpen)
-            };
+            ];
 
             return string.Join(",", values);
         }

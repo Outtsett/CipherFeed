@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using TradingPlatform.BusinessLayer;
@@ -165,7 +165,7 @@ namespace CipherFeed.Indicators
             double accumulatedVolume = 0;
             List<double> valueAreaPrices = [];
 
-            foreach (var kvp in sortedByVolume)
+            foreach (KeyValuePair<double, double> kvp in sortedByVolume)
             {
                 valueAreaPrices.Add(kvp.Key);
                 accumulatedVolume += kvp.Value;

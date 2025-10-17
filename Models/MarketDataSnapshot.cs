@@ -1,113 +1,3 @@
-/*
- * ============================================================================
- * MARKET DATA SNAPSHOT
- * ============================================================================
- * 
- * Comprehensive market data snapshot containing 65+ orderflow features per tick.
- * Manages its own cumulative state (delta, volume) and provides ML-ready
- * feature engineering for real-time trading analysis.
- * 
- * FEATURE CATEGORIES:
- *   - Metadata (2): Timestamp, SymbolName
- *   - Price/Trade (4): Last, Size, Aggressor, TickDirection
- *   - Bid/Ask (8): BidPrice, BidSize, AskPrice, AskSize, etc.
- *   - Volume/Delta (5): Volume, Trades, Delta, DeltaPercent, CumulativeDelta
- *   - Buy/Sell Volume (6): BuyVolume, SellVolume, percentages, trade counts
- *   - Imbalance (2): Imbalance, ImbalancePercent
- *   - Average Sizes (3): AverageSize, AverageBuySize, AverageSellSize
- *   - Max Trade (2): MaxOneTradeVolume, MaxOneTradeVolumePercent
- *   - Filtered Volume (6): FilteredVolume variants for noise reduction
- *   - VWAP Bid/Ask (2): VWAPBid, VWAPAsk
- *   - Cumulative Sizes (3): CumulativeSizeBid, CumulativeSizeAsk, CumulativeSize
- *   - Liquidity Changes (4): BidsLiquidityChanges, AsksLiquidityChanges, counts
- *   - Trade Sizes (3): LastTradeSize, BidTradeSize, AskTradeSize
- *   - Session Anchors (4): SessionOpen, VWAPSessionOpen, VPOCSessionOpen, TWAPSessionOpen
- * 
- * TOTAL: 56 snapshot features + 11 indicator values = 67 total exported to CSV
- * 
- * ============================================================================
- * QUANTOWER API REFERENCES
- * ============================================================================
- * 
- * Real-Time Market Data:
- *   - Last (Trade Tick): quantower-api\Core\Quotes\Last.md
- *     URL: https://api.quantower.com/docs/TradingPlatform.BusinessLayer.Last.html
- *     Properties: Price, Size, Time, AggressorFlag, TickDirection
- *     Purpose: Trade execution data (time & sales)
- *     Used in: UpdateFromLast()
- * 
- *   - Quote (Bid/Ask): quantower-api\Core\Quotes\Quote.md
- *     URL: https://api.quantower.com/docs/TradingPlatform.BusinessLayer.Quote.html
- *     Properties: Bid, BidSize, Ask, AskSize, Time, BidTickDirection, AskTickDirection
- *     Purpose: Order book top-of-book data
- *     Used in: UpdateFromQuote()
- * 
- *   - AggressorFlag: quantower-api\Core\Enums\AggressorFlag.md
- *     URL: https://api.quantower.com/docs/TradingPlatform.BusinessLayer.AggressorFlag.html
- *     Values: Buy (market buy), Sell (market sell), None
- *     Purpose: Identifies trade initiator (taker) for orderflow delta
- * 
- *   - TickDirection: quantower-api\Core\Enums\TickDirection.md
- *     URL: https://api.quantower.com/docs/TradingPlatform.BusinessLayer.TickDirection.html
- *     Values: Up, Down, Undefined
- *     Purpose: Price movement direction for momentum analysis
- * 
- * Symbol-Level Aggregates:
- *   - Symbol.Volume: quantower-api\Core\BusinessObjects\Symbol.md
- *     URL: https://api.quantower.com/docs/TradingPlatform.BusinessLayer.Symbol.html
- *     Property: Volume (double) - total traded volume from session start
- *     Purpose: Accessed in UpdateFromLast() for aggregate volume tracking
- * 
- *   - Symbol.Trades: quantower-api\Core\BusinessObjects\Symbol.md
- *     Property: Trades (long) - total trade count from session start
- *     Purpose: Accessed in UpdateFromLast() for trade count tracking
- * 
- *   - Symbol.Delta: quantower-api\Core\BusinessObjects\Symbol.md
- *     Property: Delta (double) - cumulative buy volume - sell volume
- *     Purpose: Accessed in UpdateFromLast() for orderflow delta
- * 
- * ============================================================================
- * CUMULATIVE STATE MANAGEMENT
- * ============================================================================
- * 
- * Internal Cumulative Fields (Private):
- *   _cumulativeDelta: Running delta (buy vol - sell vol) from session start
- *   _cumulativeBuyVolume: Total buy (aggressor) volume from session start
- *   _cumulativeSellVolume: Total sell (aggressor) volume from session start
- *   _cumulativeSizeBid: Running bid size accumulation
- *   _cumulativeSizeAsk: Running ask size accumulation
- * 
- * Update Pattern (per tick):
- *   1. UpdateFromLast() receives Last tick
- *   2. Identifies aggressor (Buy/Sell)
- *   3. Updates internal cumulative counters
- *   4. Calculates percentages and imbalances
- *   5. Copies to public properties for CSV export
- * 
- * Reset on Session Change:
- *   CipherFeed.cs::OnSessionChanged() calls ResetCumulativeState()
- *   All cumulative fields reset to 0.0
- *   Ensures session-anchored calculations
- * 
- * ============================================================================
- * USAGE IN CIPHERFEED STRATEGY
- * ============================================================================
- * 
- * Created: One instance per symbol in latestSnapshots dictionary
- * Updated by: 
- *   - CipherFeed.cs::OnNewLast_ForSymbol() ? UpdateFromLast()
- *   - CipherFeed.cs::OnNewQuote_ForSymbol() ? UpdateFromQuote()
- * 
- * Logged by: Core\SymbolLogger.cs::LogOrderflowFeatures()
- * Exported by: CSVDataExporter.cs::WriteSnapshot()
- * 
- * Accessed externally:
- *   - GetMarketDataSnapshot(Symbol) - retrieve by symbol reference
- *   - GetMarketDataSnapshot(string) - retrieve by symbol root name
- * 
- * ============================================================================
- */
-
 using System;
 using TradingPlatform.BusinessLayer;
 
@@ -259,6 +149,13 @@ namespace CipherFeed.Models
         private double _cumulativeSellVolume;
         private double _cumulativeSizeBid;
         private double _cumulativeSizeAsk;
+        private int _cumulativeBuyTrades;
+        private int _cumulativeSellTrades;
+        private double _maxOneTradeVolume;
+        private double _cumulativeVWAPBid;
+        private double _cumulativeVWAPAsk;
+        private int _vwapBidCount;
+        private int _vwapAskCount;
 
         #endregion
 
@@ -289,11 +186,13 @@ namespace CipherFeed.Models
             {
                 tradeDelta = last.Size;
                 _cumulativeBuyVolume += last.Size;
+                _cumulativeBuyTrades++;
             }
             else if (last.AggressorFlag == AggressorFlag.Sell)
             {
                 tradeDelta = -last.Size;
                 _cumulativeSellVolume += last.Size;
+                _cumulativeSellTrades++;
             }
 
             // Update cumulative delta
@@ -303,6 +202,8 @@ namespace CipherFeed.Models
             // Set cumulative volumes
             BuyVolume = _cumulativeBuyVolume;
             SellVolume = _cumulativeSellVolume;
+            BuyTrades = _cumulativeBuyTrades;
+            SellTrades = _cumulativeSellTrades;
 
             // Calculate percentages
             double totalVolume = BuyVolume + SellVolume;
@@ -318,6 +219,52 @@ namespace CipherFeed.Models
             {
                 ImbalancePercent = Imbalance / totalVolume * 100;
                 DeltaPercent = Delta / totalVolume * 100;
+            }
+
+            // Calculate average sizes
+            if (Trades > 0)
+            {
+                AverageSize = Volume / Trades;
+            }
+            if (BuyTrades > 0)
+            {
+                AverageBuySize = BuyVolume / BuyTrades;
+            }
+            if (SellTrades > 0)
+            {
+                AverageSellSize = SellVolume / SellTrades;
+            }
+
+            // Track max one trade volume
+            if (last.Size > _maxOneTradeVolume)
+            {
+                _maxOneTradeVolume = last.Size;
+            }
+            MaxOneTradeVolume = _maxOneTradeVolume;
+            if (totalVolume > 0)
+            {
+                MaxOneTradeVolumePercent = MaxOneTradeVolume / totalVolume * 100;
+            }
+
+            // Calculate filtered volume (filter out trades < 10% of max trade)
+            double filterThreshold = MaxOneTradeVolume * 0.1;
+            if (last.Size >= filterThreshold)
+            {
+                FilteredVolume += last.Size;
+                if (last.AggressorFlag == AggressorFlag.Buy)
+                {
+                    FilteredBuyVolume += last.Size;
+                }
+                else if (last.AggressorFlag == AggressorFlag.Sell)
+                {
+                    FilteredSellVolume += last.Size;
+                }
+            }
+            if (totalVolume > 0)
+            {
+                FilteredVolumePercent = FilteredVolume / totalVolume * 100;
+                FilteredBuyVolumePercent = FilteredBuyVolume / totalVolume * 100;
+                FilteredSellVolumePercent = FilteredSellVolume / totalVolume * 100;
             }
 
             // Track liquidity changes
@@ -351,9 +298,10 @@ namespace CipherFeed.Models
                 AskTradeSize = last.Size;
             }
 
-            // Set cumulative sizes
+            // Set cumulative sizes and total
             CumulativeSizeBid = _cumulativeSizeBid;
             CumulativeSizeAsk = _cumulativeSizeAsk;
+            CumulativeSize = CumulativeSizeBid + CumulativeSizeAsk;
         }
 
         /// <summary>
@@ -379,6 +327,27 @@ namespace CipherFeed.Models
 
             CumulativeSizeBid = _cumulativeSizeBid;
             CumulativeSizeAsk = _cumulativeSizeAsk;
+            CumulativeSize = CumulativeSizeBid + CumulativeSizeAsk;
+
+            // Calculate VWAP for bid/ask
+            if (quote.BidSize > 0)
+            {
+                _cumulativeVWAPBid += quote.Bid * quote.BidSize;
+                _vwapBidCount++;
+                if (_vwapBidCount > 0)
+                {
+                    VWAPBid = _cumulativeVWAPBid / _cumulativeSizeBid;
+                }
+            }
+            if (quote.AskSize > 0)
+            {
+                _cumulativeVWAPAsk += quote.Ask * quote.AskSize;
+                _vwapAskCount++;
+                if (_vwapAskCount > 0)
+                {
+                    VWAPAsk = _cumulativeVWAPAsk / _cumulativeSizeAsk;
+                }
+            }
         }
 
         /// <summary>
@@ -391,12 +360,28 @@ namespace CipherFeed.Models
             _cumulativeSellVolume = 0.0;
             _cumulativeSizeBid = 0.0;
             _cumulativeSizeAsk = 0.0;
+            _cumulativeBuyTrades = 0;
+            _cumulativeSellTrades = 0;
+            _maxOneTradeVolume = 0.0;
+            _cumulativeVWAPBid = 0.0;
+            _cumulativeVWAPAsk = 0.0;
+            _vwapBidCount = 0;
+            _vwapAskCount = 0;
 
             CumulativeDelta = 0.0;
             BuyVolume = 0.0;
             SellVolume = 0.0;
+            BuyTrades = 0;
+            SellTrades = 0;
             CumulativeSizeBid = 0.0;
             CumulativeSizeAsk = 0.0;
+            CumulativeSize = 0.0;
+            MaxOneTradeVolume = 0.0;
+            FilteredVolume = 0.0;
+            FilteredBuyVolume = 0.0;
+            FilteredSellVolume = 0.0;
+            VWAPBid = 0.0;
+            VWAPAsk = 0.0;
         }
 
         #endregion
